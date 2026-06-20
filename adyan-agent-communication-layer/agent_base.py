@@ -46,9 +46,17 @@ from protocol import (
 
 # ---------------------------------------------------------------------------
 # Guardrail: TESTNET ONLY. Never mainnet, never real funds. uagents' Agent
-# defaults to network="mainnet", so we set it explicitly everywhere.
+# defaults to network="mainnet", so we set it explicitly everywhere — and we
+# FAIL CLOSED: any FETCH_NETWORK other than "testnet" raises rather than
+# silently routing agents (or funds) to mainnet.
 # ---------------------------------------------------------------------------
-FET_NETWORK = os.getenv("FETCH_NETWORK", "testnet")
+_REQUESTED_NETWORK = os.getenv("FETCH_NETWORK", "testnet").strip().lower()
+if _REQUESTED_NETWORK not in ("", "testnet"):
+    raise RuntimeError(
+        f"Stockpile is TESTNET ONLY — refusing FETCH_NETWORK={_REQUESTED_NETWORK!r}. "
+        f"Unset it or set FETCH_NETWORK=testnet."
+    )
+FET_NETWORK = "testnet"
 
 README_PATH = os.path.join(os.path.dirname(__file__), "README.md")
 
