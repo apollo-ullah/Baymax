@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import os
 
+os.environ.setdefault("STOCKPILE_OFFER_TIMEOUT", "30")
+
 # Import agent_base FIRST so the event-loop workaround is installed before ANY
 # Agent is constructed. stockpile_agents also imports agent_base, but we name it
 # explicitly here to make the ordering contract obvious.

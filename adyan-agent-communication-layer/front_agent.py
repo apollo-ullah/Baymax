@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from typing import Optional
 
 # Import agent_base FIRST so the Python-3.14 event-loop workaround is installed
@@ -55,6 +56,7 @@ from agent_base import (
 from uagents import Context
 
 from stockpile_agents import (
+    NEGOTIATIONS,
     attach_front_handlers,
     start_negotiation,
 )
@@ -104,6 +106,61 @@ _GREETING_RE = re.compile(
     r"help|what can you do|who are you|capabilities|\?)\b",
     re.IGNORECASE,
 )
+
+# Our own milestone narration echoed back from ASI:One must NOT re-trigger a deal.
+_MILESTONE_ECHO_RE = re.compile(
+    r"^\s*\*\*(?:shortfall_detected|requesting|collecting_offers|evaluating|"
+    r"proposing|settling|confirmed|failed|re_planning|idle)\*\*",
+    re.IGNORECASE,
+)
+
+# ASI:One meta-replies / error strings — not user supply intents.
+_ASI1_META_RE = re.compile(
+    r"(sorry, something went wrong|want me to help|manual procurement it is|"
+    r"no offer artifacts|sometimes the best offers|struck out|"
+    r"draft (?:a )?follow-up|draft those procurement)",
+    re.IGNORECASE,
+)
+
+# A real user intent names an item AND uses request language (not just a number
+# in a recap sentence like "200 IV fluids short and the automated system...").
+_REQUEST_CUE_RE = re.compile(
+    r"\b(?:short|need|needs|require|requires|running low|low on|out of|"
+    r"shortage|shortfall|restock|cover|we'?re short|is short)\b",
+    re.IGNORECASE,
+)
+
+# Distinctive markers of an ASI:One LLM recap/echo — never how a user types a
+# one-line intent. The wrapping ASI:One agent parrots our narration back as long,
+# multi-line, emoji/price/phone-laden "supplier" monologues; those must not
+# re-trigger a deal even when they happen to contain "short"/"needs".
+_CHATTER_RE = re.compile(
+    r"(i found|suppliers?|distributors?|would you like|next steps?|options:|"
+    r"in stock|per (?:bag|unit|case)|\$\d|\(\d{3}\)|\bstep\s+\d|"
+    r"📞|🏥|🚑|🏭|📦|🎯|✅|🚨|🎉|💉|⏰|🤷)",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_echo_chatter(text: str) -> bool:
+    """True if `text` reads like an ASI:One LLM recap, not a user supply intent.
+
+    A genuine intent is one short line ("Hospital A is short on IV fluids"); the
+    echoes are long, multi-line, emoji/price/phone-laden monologues. Any of those
+    signals => treat as echo and ignore.
+    """
+    return (
+        len(text) > 240
+        or text.count("\n") >= 2
+        or bool(_CHATTER_RE.search(text))
+    )
+
+
+# Per-sender cooldown. After a real intent kicks off a negotiation, the ASI:One
+# LLM echoes it back many times within seconds; ignore further "requests" from the
+# same sender for this window so the echo storm cannot spawn duplicate deals.
+_INTENT_COOLDOWN_S = float(os.getenv("STOCKPILE_INTENT_COOLDOWN", "20"))
+_LAST_ACCEPTED_INTENT: dict[str, float] = {}
 
 _CAPABILITIES = (
     "STOCKPILE — autonomous hospital supply negotiation.\n\n"
@@ -182,21 +239,21 @@ def _match_quantity(text: str, item_aliases: tuple[str, ...]) -> Optional[int]:
         m = re.search(rf"\b(\d{{1,6}})\s+{re.escape(alias)}\b", tl)
         if m:
             return int(m.group(1))
-    # 3) a lone number anywhere (last resort) — e.g. "we're short, about 80".
-    m = re.search(r"\b(\d{1,6})\b", tl)
-    if m:
-        return int(m.group(1))
+    # No lone-number fallback: a bare number in prose (e.g. "Step 1") is too easily
+    # mis-read from an ASI:One recap. Unstated quantity => None, and
+    # start_negotiation() falls back to the inventory-derived shortfall.
     return None
 
 
 def parse_intent(text: str) -> dict:
     """Parse a natural-language supply intent into a structured request.
 
-    Returns a dict with one of three `kind`s:
+    Returns a dict with one of four `kind`s:
       {"kind": "greeting"}                         -> show capabilities
       {"kind": "request", "item": str,
        "requester": str, "quantity_needed": int|None}
       {"kind": "unknown"}                          -> show example phrasings
+      {"kind": "ignored", "reason": str}           -> ASI:One echo / meta; no reply
 
     Recognised phrasings (case-insensitive), e.g.:
       * "Hospital A is short on IV fluids"
@@ -217,6 +274,18 @@ def parse_intent(text: str) -> dict:
     if not text:
         return {"kind": "greeting"}
 
+    if _MILESTONE_ECHO_RE.match(text):
+        return {"kind": "ignored", "reason": "milestone_echo"}
+
+    if _ASI1_META_RE.search(text):
+        return {"kind": "ignored", "reason": "asi1_meta"}
+
+    # An ASI:One LLM recap (long / multi-line / emoji / supplier list) — never how
+    # a user types a one-line intent. Drop it so it can neither re-trigger a deal
+    # nor spawn a help-reply loop. (Checked before item-matching on purpose.)
+    if _looks_like_echo_chatter(text):
+        return {"kind": "ignored", "reason": "echo_chatter"}
+
     tl = text.lower()
     item = _match_item(tl)
 
@@ -226,6 +295,10 @@ def parse_intent(text: str) -> dict:
 
     if item is None:
         return {"kind": "unknown"}
+
+    # Item mentioned but no request phrasing — likely ASI:One echoing our recap.
+    if not _REQUEST_CUE_RE.search(text):
+        return {"kind": "ignored", "reason": "no_request_cue"}
 
     requester = _match_facility(text) or REQUESTER  # default Hospital A
 
@@ -319,11 +392,27 @@ async def on_intent(ctx: Context, sender: str, text: str) -> None:
     ASI:One conversation automatically (and the final step ends the session).
 
     For greetings/help or unparseable input we reply directly with a ChatMessage
-    and end the session — no negotiation is started.
+    and end the session — no negotiation is started. Echo/meta messages from
+    ASI:One are silently ignored so narration cannot re-trigger a new deal.
     """
     parsed = _PARSER(text)
     kind = parsed.get("kind")
     ctx.logger.info(f"on_intent from {sender}: {text!r} -> {parsed}")
+
+    if kind == "ignored":
+        ctx.logger.debug(
+            f"ignoring non-intent chat from {sender}: {parsed.get('reason')}"
+        )
+        return
+
+    # One active negotiation per chat user — prevents duplicate broadcasts when
+    # ASI:One delivers delayed/duplicate messages.
+    for neg in NEGOTIATIONS.values():
+        if neg.get("reply_to") == sender and not neg.get("done"):
+            ctx.logger.info(
+                f"negotiation already in progress for {sender} — ignoring duplicate intent"
+            )
+            return
 
     if kind == "greeting":
         await ctx.send(sender, create_text_chat(_CAPABILITIES, end_session=False))
@@ -333,6 +422,17 @@ async def on_intent(ctx: Context, sender: str, text: str) -> None:
         # Unparseable: help the user with concrete example phrasings, then end.
         await ctx.send(sender, create_text_chat(_UNPARSEABLE_HELP, end_session=True))
         return
+
+    # Cooldown: suppress the post-intent ASI:One echo storm from the same sender
+    # (the LLM re-sends recaps of our narration for many seconds after a real ask).
+    last = _LAST_ACCEPTED_INTENT.get(sender)
+    if last is not None and (time.monotonic() - last) < _INTENT_COOLDOWN_S:
+        ctx.logger.info(
+            f"intent cooldown ({_INTENT_COOLDOWN_S:.0f}s) active for {sender} — "
+            f"ignoring likely echo"
+        )
+        return
+    _LAST_ACCEPTED_INTENT[sender] = time.monotonic()
 
     item = parsed["item"]
     requester = parsed.get("requester") or REQUESTER

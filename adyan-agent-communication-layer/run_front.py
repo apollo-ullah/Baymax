@@ -49,10 +49,21 @@ from __future__ import annotations
 
 import os
 
+# Mailbox runners need a longer offer window and lighter chat narration — set
+# BEFORE importing stockpile_agents (reads OFFER_TIMEOUT at import time).
+os.environ.setdefault("STOCKPILE_OFFER_TIMEOUT", "30")
+os.environ.setdefault("STOCKPILE_SPARSE_NARRATION", "1")
+
 # Import agent_base FIRST so the Python 3.14 event-loop workaround is installed
 # before ANY Agent is constructed. front_agent and settlement both import it too,
 # but we name it explicitly to make the ordering contract obvious.
 import agent_base  # noqa: F401  (side-effect: installs current event loop)
+
+# Live ASI:One narration is rate-limited by the chat relay (429s when every
+# milestone is streamed). Default to sparse narration (only the key states). Must
+# be set BEFORE importing stockpile_agents, which reads it at import. Override with
+# STOCKPILE_SPARSE_NARRATION=0.
+os.environ.setdefault("STOCKPILE_SPARSE_NARRATION", "1")
 
 # Reuse the EXACT FRONT construction path (chat protocol + negotiation handlers)
 # so run_front.py and front_agent.py can never drift apart.

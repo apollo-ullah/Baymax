@@ -18,6 +18,16 @@ other streams).
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
+
+# Load `.env` before reading seed/network env vars so all runners share the
+# same deterministic addresses (SURPLUS_ADDRESSES, etc.).
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).resolve().parent / ".env")
+except ImportError:
+    pass
 
 # Python 3.14 removed the implicit current event loop; uagents 0.25.2 calls
 # asyncio.get_event_loop() in Agent.__init__. Establish one before any Agent is

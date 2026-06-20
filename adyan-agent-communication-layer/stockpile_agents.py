@@ -80,7 +80,20 @@ from protocol import (
 )
 
 # Seconds to wait for offers before evaluating with whatever arrived.
+# Bureau/local: 4s is fine. Mailbox (separate processes): use 30s+ — Agentverse
+# round-trips are much slower than in-process Bureau messaging.
 OFFER_TIMEOUT_S = float(os.getenv("STOCKPILE_OFFER_TIMEOUT", "4.0"))
+# When set, only narrate key milestones back to ASI:One (avoids 429 rate limits).
+SPARSE_NARRATION = os.getenv("STOCKPILE_SPARSE_NARRATION", "").lower() in ("1", "true", "yes")
+_NARRATE_STATES = frozenset({
+    NegotiationState.SHORTFALL_DETECTED,
+    NegotiationState.EVALUATING,
+    NegotiationState.PROPOSING,
+    NegotiationState.SETTLING,
+    NegotiationState.RE_PLANNING,
+    NegotiationState.FAILED,
+    NegotiationState.CONFIRMED,
+})
 # Bounded re-plan: how many times we try to re-home a dropped (rejected) leg
 # before giving up and settling what was accepted. Prevents infinite re-propose.
 MAX_REPLAN_ATTEMPTS = int(os.getenv("STOCKPILE_MAX_REPLANS", "3"))
@@ -102,7 +115,10 @@ async def _step(ctx: Context, neg: dict, state: NegotiationState, detail: str,
     neg["state"] = state
     ctx.logger.info(f"[{state.value.upper()}] {detail}")
     reply_to = neg.get("reply_to")
-    if reply_to and (narrate or final):
+    should_narrate = narrate or final
+    if SPARSE_NARRATION and not final:
+        should_narrate = narrate and state in _NARRATE_STATES
+    if reply_to and should_narrate:
         await ctx.send(reply_to, create_text_chat(f"**{state.value}** — {detail}",
                                                   end_session=final))
 
@@ -431,6 +447,10 @@ def attach_front_handlers(front):
     async def on_offer(ctx: Context, sender: str, msg: SupplyOffer):
         neg = NEGOTIATIONS.get(msg.request_id)
         if not neg or neg["done"]:
+            ctx.logger.debug(
+                f"Ignoring SupplyOffer for unknown/done request {msg.request_id} "
+                f"from {sender} ({msg.offerer})."
+            )
             return
         # Idempotence: ignore duplicate offers from a facility already recorded.
         if msg.offerer in neg["offers"]:
