@@ -1,0 +1,19 @@
+# Stockpile agent-communication layer — pinned to the versions verified in Wave 0.
+# Python 3.12+ (developed/verified on 3.14).
+
+# Fetch.ai agent framework + protocol models (chat + payment).
+uagents==0.25.2
+uagents-core==0.4.7
+
+# On-chain FET transaction verification for the Payment Protocol (testnet).
+# Ships transitively with uagents, pinned here because settlement.py imports it
+# directly (LedgerClient / NetworkConfig.fetchai_stable_testnet()).
+cosmpy>=0.11.0
+
+# Local env config (seeds, network) — never commit the filled-in .env.
+python-dotenv>=1.0.0
+
+# Optional, Wave 1 FRONT stream only: intent parsing via the ASI:One LLM
+# (OpenAI-compatible client, base_url=https://api.asi1.ai/v1). The Wave 0
+# contract + negotiation do not require it.
+# openai>=1.40.0
