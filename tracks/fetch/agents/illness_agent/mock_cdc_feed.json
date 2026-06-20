@@ -1,0 +1,10 @@
+{
+  "source": "MOCK CDC/WHO ILINet feed (NOT live) — FR10 demo data",
+  "updated": "2026-06-20",
+  "scale": ["Minimal", "Low", "Moderate", "High", "Very High"],
+  "regions": {
+    "san_francisco": { "influenza": "High", "covid": "Moderate", "rsv": "Low" },
+    "los_angeles": { "influenza": "Very High", "covid": "High", "rsv": "Moderate" },
+    "sacramento": { "influenza": "Moderate", "covid": "Low", "rsv": "Low" }
+  }
+}
