@@ -36,7 +36,3 @@ This starts a local Redis Stack instance (ports `6379` and `8001`), seeds demo d
 - `src/vector_history.py` — optional embedding-based historical recall
 - `src/demo_run.py` — end-to-end judge-friendly demo runner
 - `redis_contract.md` — the locked Redis schema (owners, readers, purpose)
-
-## Prize Fit
-
-This is **beyond caching**: Redis acts as **operational memory** (live inventory, forecast, and surplus state), a **live event bus** (Pub/Sub to the dashboard), a **stream ledger** (append-only audit logs for transfers and alerts), and a **historical recall layer** (vector similarity over past usage periods) — all in one system.
