@@ -1,4 +1,4 @@
-"""End-to-end Redis demo runner for the stockpile track.
+"""End-to-end Redis demo runner for the Redis track.
 
 Run from inside tracks/redis with:
     python src/demo_run.py

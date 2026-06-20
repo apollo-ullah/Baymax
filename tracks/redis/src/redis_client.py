@@ -1,4 +1,4 @@
-"""Redis connection helpers for the stockpile track."""
+"""Redis connection helpers for the Redis track."""
 
 import os
 

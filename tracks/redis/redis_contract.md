@@ -1,6 +1,6 @@
 # Redis Contract
 
-The locked Redis schema for the stockpile track. Owner = who writes the key,
+The locked Redis schema for the Redis track. Owner = who writes the key,
 Reader = who consumes it. All values are kept simple (hashes, strings, streams)
 so the demo runs without RediSearch.
 

@@ -1,4 +1,4 @@
-"""Redis key helpers and constants for the stockpile track.
+"""Redis key helpers and constants for the Redis track.
 
 This module only defines naming conventions for keys, streams, and channels.
 It must not import or talk to Redis directly.
