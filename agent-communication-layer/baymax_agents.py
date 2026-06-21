@@ -69,8 +69,10 @@ from interfaces import (
     eta_minutes_for,
     expiry_for,
     get_inventory,
+    ingest_forecast,
     order_from_supplier,
     rank_offers,
+    research_crisis,
 )
 from protocol import (
     NegotiationState,
@@ -154,6 +156,26 @@ async def _step(ctx: Context, neg: dict, state: NegotiationState, detail: str,
             pass  # a narration sink must never break the negotiation
 
 
+async def _emit(ctx: Context, *, reply_to: str | None, source: str, label: str,
+                detail: str, req_id: str | None = None, final: bool = False):
+    """Narrate a one-off milestone that has NO negotiation `neg` yet (the crisis-
+    research + ingest steps run before start_negotiation creates one). Mirrors
+    _step's narration exactly: log it, stream it to the ASI:One chat user if
+    reply_to is set, and push it to the dashboard narration sink. `label` is a
+    plain string (e.g. "researching") — these are NOT NegotiationState members,
+    so protocol.py stays frozen."""
+    ctx.logger.info(f"[{label.upper()}] {detail}")
+    if reply_to:
+        await ctx.send(reply_to, create_text_chat(f"**{label}** — {detail}",
+                                                  end_session=final))
+    if _NARRATION_SINK is not None:
+        try:
+            _NARRATION_SINK({"req_id": req_id, "state": label,
+                             "detail": detail, "final": final})
+        except Exception:
+            pass  # a narration sink must never break the flow
+
+
 # ---------------------------------------------------------------------------
 # FRONT (Hospital A) — orchestration
 # ---------------------------------------------------------------------------
@@ -216,6 +238,104 @@ async def start_negotiation(ctx: Context, item: str, *, requester: str = REQUEST
         await ctx.send(addr, req)
     neg["state"] = NegotiationState.COLLECTING_OFFERS
     return req_id
+
+
+# ---------------------------------------------------------------------------
+# Crisis flow (the realignment's front-of-funnel). A stated crisis ("wildfires
+# near Hospital A") -> research seam infers crisis type + ranked at-risk supplies
+# -> pick the top at-risk item that is actually short -> drive the EXISTING
+# start_negotiation chain. Served identically on chat (reply_to) and the
+# dashboard (source="dashboard"). No protocol/negotiation contract changes.
+# ---------------------------------------------------------------------------
+
+def _select_crisis_item(brief, requester: str) -> str | None:
+    """Choose the negotiation item from a crisis brief (decision: top at-risk
+    item that is present AND below safety threshold; else first present; else the
+    top-ranked item regardless, so the demo always negotiates something)."""
+    for a in brief.at_risk:                       # 1) present + currently short
+        try:
+            inv = get_inventory(requester, a.item)
+        except Exception:  # noqa: BLE001
+            continue
+        if inv.present and inv.shortfall > 0:
+            return a.item
+    for a in brief.at_risk:                       # 2) present at all
+        try:
+            inv = get_inventory(requester, a.item)
+        except Exception:  # noqa: BLE001
+            continue
+        if inv.present:
+            return a.item
+    return brief.top_item                         # 3) top-ranked regardless
+
+
+async def start_crisis(ctx: Context, crisis_text: str, *, requester: str = REQUESTER,
+                       region: str = "san_francisco", reply_to: str | None = None,
+                       source: str = "chat") -> str | None:
+    """Research a stated crisis, pick an at-risk item, and drive the existing
+    negotiation. Returns the negotiation request_id, or None if research yielded
+    no actionable item. Both surfaces call this (chat sets reply_to; the dashboard
+    sets source="dashboard")."""
+    await _emit(ctx, reply_to=reply_to, source=source, label="researching",
+                detail=f"Researching the crisis to identify at-risk supplies for {requester}…")
+    try:
+        # research seam may call Claude -> run off the event loop.
+        brief = await asyncio.to_thread(research_crisis, crisis_text, region)
+    except Exception as exc:  # noqa: BLE001 — never crash the handler
+        await _emit(ctx, reply_to=reply_to, source=source, label="failed",
+                    detail=f"Crisis research failed ({exc}). No action taken.", final=True)
+        return None
+
+    # Publish the brief for the dashboard crisis card (fail-soft; no-op offline).
+    try:
+        import redis_inventory  # lazy
+        redis_inventory.write_crisis_active({
+            "crisis_text": crisis_text, "crisis_type": brief.crisis_type,
+            "region": region, "rationale": brief.rationale, "status": "researched",
+            "requester": requester,
+            "at_risk": [{"item": a.item, "risk": a.risk, "rationale": a.rationale}
+                        for a in brief.at_risk],
+        })
+    except Exception:  # noqa: BLE001
+        pass
+
+    at_risk_str = ", ".join(f"{a.item} ({a.risk})" for a in brief.at_risk) or "none identified"
+    await _emit(ctx, reply_to=reply_to, source=source, label="researched",
+                detail=f"Crisis type: {brief.crisis_type}. At-risk supplies: {at_risk_str}. "
+                       f"{brief.rationale}")
+
+    item = _select_crisis_item(brief, requester)
+    if not item:
+        await _emit(ctx, reply_to=reply_to, source=source, label="failed",
+                    detail="Research surfaced no actionable item to source. "
+                           "Escalate to manual review.", final=True)
+        return None
+
+    await _emit(ctx, reply_to=reply_to, source=source, label="researched",
+                detail=f"Acting on **{item}** for {requester} — checking the network now.")
+    return await start_negotiation(ctx, item, requester=requester,
+                                   reply_to=reply_to, source=source)
+
+
+async def run_ingest(ctx: Context, *, region: str = "san_francisco",
+                     reply_to: str | None = None, source: str = "chat") -> None:
+    """Run the forecast ingest loop (WHO + weather + illness + CDC stub -> Redis ->
+    Claude reasoning) and narrate the proactive recommendation. Same engine the
+    dashboard "Ingest Data" button uses; reached from chat via the `ingest` kind."""
+    await _emit(ctx, reply_to=reply_to, source=source, label="ingesting",
+                detail=f"Ingesting live signals for {region}: WHO + weather + illness + CDC stub…")
+    try:
+        # ingest seam pulls the fetch/Redis stack -> run off the event loop.
+        rec = await asyncio.to_thread(ingest_forecast, region)
+    except Exception as exc:  # noqa: BLE001
+        await _emit(ctx, reply_to=reply_to, source=source, label="failed",
+                    detail=f"Ingest failed ({exc}).", final=True)
+        return
+    items = ", ".join(rec.priority_items) if rec.priority_items else "none"
+    detail = (f"Forecast risk **{rec.risk_level}**. Priority items: {items}. "
+              f"{rec.reasoning} Recommended action: {rec.recommended_action}")
+    await _emit(ctx, reply_to=reply_to, source=source, label="ingested",
+                detail=detail, final=True)
 
 
 async def _evaluate(ctx: Context, req_id: str):
@@ -541,6 +661,27 @@ async def _maybe_finish(ctx: Context, req_id: str):
         _maybe_exit(ctx)
 
 
+def _log_confirmed_transfers(neg: dict, accepted_legs: list[dict], settlement_ref: str,
+                             tx_id: str | None = None) -> None:
+    """Fail-soft: append each confirmed leg to the Redis `transfers` stream so the
+    dashboard's transfer audit panel reflects REAL settlements (it was demo-only
+    before). No-op offline / when Redis is down — never breaks settlement."""
+    try:
+        from datetime import datetime, timezone
+        import redis_inventory  # lazy
+        ts = datetime.now(timezone.utc).isoformat()
+        for leg in accepted_legs:
+            redis_inventory.write_transfer_record({
+                "item": neg.get("item"), "quantity": leg.get("quantity"),
+                "from_hospital": leg.get("offerer"), "to_hospital": neg.get("requester"),
+                "eta_minutes": leg.get("eta", 0), "status": "confirmed",
+                "settlement_status": settlement_ref, "tx_id": tx_id,
+                "created_at": ts, "req_id": neg.get("req_id"),
+            })
+    except Exception:  # noqa: BLE001
+        pass
+
+
 async def _settle(ctx: Context, req_id: str):
     """Settle the accepted legs. Idempotent: guarded so it can never double-fire
     even if accept/reject completion paths both reach it."""
@@ -589,6 +730,7 @@ async def _settle(ctx: Context, req_id: str):
         )
         return
 
+    _log_confirmed_transfers(neg, accepted_legs, tx)
     await _step(ctx, neg, NegotiationState.CONFIRMED, detail, narrate=True, final=True)
     neg["done"] = True
     _maybe_exit(ctx)
@@ -614,6 +756,7 @@ async def finalize_after_payment(
         detail = (f"Transfer confirmed ({legs}) to {neg['requester']} — covered {covered}/"
                   f"{neg['need']} {neg['item']}; {short} still short. "
                   f"Settlement: {settlement_ref}.{tx_note}")
+    _log_confirmed_transfers(neg, accepted_legs, settlement_ref, tx_id=tx_id)
     await _step(ctx, neg, NegotiationState.CONFIRMED, detail, narrate=True, final=True)
     neg["awaiting_payment"] = False
     neg["done"] = True

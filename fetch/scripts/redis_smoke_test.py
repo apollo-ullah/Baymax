@@ -24,9 +24,11 @@ def main():
         "weather_temperature_c": 18.9,
         "weather_code": 0,
     })
+    # The real agents (illness_agent + the WHO fetcher) write a NESTED illness
+    # map under items["illness"], and the UI reads items.illness — so validate
+    # that actual contract, not a flat illness_* key shape.
     redis_io.upsert_forecast_items(REGION, {
-        "illness_influenza": "High",
-        "illness_covid": "Moderate",
+        "illness": {"influenza": "High", "covid": "Moderate"},
     })
 
     fc = redis_io.get_forecast(REGION)
@@ -35,7 +37,8 @@ def main():
 
     items = (fc or {}).get("items", {})
     assert items.get("weather_temperature_c") == 18.9, "weather slice missing"
-    assert items.get("illness_influenza") == "High", "illness slice missing"
+    illness = items.get("illness", {})
+    assert illness.get("influenza") == "High", "illness slice missing"
     print("[3] Both weather + illness signals coexist in forecast — wiring works ✅")
 
 

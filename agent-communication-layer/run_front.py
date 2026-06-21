@@ -160,6 +160,29 @@ def build_agent():
                 ctx, item, requester=requester, quantity_needed=qty,
                 reply_to=None, source="dashboard")
 
+        @agent.on_interval(period=1.0)
+        async def _poll_dashboard_crisis(ctx: Context):
+            # The dashboard crisis box RPUSHes onto baymax:crisis; research the
+            # crisis, pick an at-risk item, and negotiate (source="dashboard").
+            if not hasattr(dashboard_bus, "pop_crisis"):
+                return
+            for neg in sp.NEGOTIATIONS.values():  # one dashboard run at a time
+                if neg.get("reply_to") is None and not neg.get("done"):
+                    return
+            crisis = dashboard_bus.pop_crisis()
+            if not crisis:
+                return
+            crisis_text = (crisis.get("crisis_text") or "").strip()
+            if not crisis_text:
+                return
+            requester = crisis.get("requester") or REQUESTER
+            region = crisis.get("region") or "san_francisco"
+            ctx.logger.info(
+                f"dashboard crisis -> start_crisis({crisis_text!r}, source=dashboard)")
+            await sp.start_crisis(
+                ctx, crisis_text, requester=requester, region=region,
+                reply_to=None, source="dashboard")
+
         @agent.on_interval(period=0.5)
         async def _poll_dashboard_decision(ctx: Context):
             # The dashboard's Approve / Order externally / Reject buttons RPUSH onto
@@ -202,7 +225,8 @@ if __name__ == "__main__":
     print("  4. Find the agent on ASI:One (https://asi1.ai) and chat it, e.g.")
     print("       \"Hospital A is short on IV fluids\"")
     print("  5. Watch the negotiation milestones stream back into the chat; on")
-    print("     AWAITING_APPROVAL reply 'approve', 'order N <item>', or 'reject'.")
+    print("     AWAITING_APPROVAL reply 'approve', 'order' (full shortfall), or 'reject'.")
+    print("     Or skip the shortfall entirely: \"order 500 saline\" / \"wildfires near Hospital A\" / \"ingest data\".")
     print("  6. On CONFIRMED a RequestPayment is sent for the user to approve + sign.")
     print("=" * 70)
     agent.run()

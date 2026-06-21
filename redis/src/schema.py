@@ -63,3 +63,31 @@ HISTORY_INDEX = "history:usage:index"
 
 # Latest raw camera/vision inventory detection output (JSON string).
 VISION_LATEST_KEY = "vision:latest"
+
+
+# --- Reasoning + crisis (Claude outputs) ---
+
+# Latest Claude supply-risk reasoning (JSON string):
+# {risk_level, priority_items, reasoning, recommended_action, updated_at}.
+# Written by the WHO ingest fetcher (run_who_update); read by the dashboard.
+REASONING_KEY = "reasoning:latest"
+
+# The active crisis brief (JSON string): the user's crisis prompt + the inferred
+# crisis type + ranked at-risk supplies + rationale + status. Written by the
+# crisis flow (dashboard POST /api/crisis seeds it; the agent layer's
+# start_crisis fills in the research result); read by the dashboard.
+CRISIS_ACTIVE_KEY = "crisis:active"
+
+
+def crisis_active_key() -> str:
+    """JSON string holding the active crisis brief."""
+    return CRISIS_ACTIVE_KEY
+
+
+# --- Live narration (FRONT agent -> dashboard SSE) ---
+
+# Channel carrying negotiation/crisis/ingest milestones the dashboard streams
+# over SSE. This is the channel the dashboard ACTUALLY subscribes to — distinct
+# from the legacy channels:events / channels:alerts above (which currently have
+# no live subscriber).
+NARRATION_CHANNEL = "baymax:narration"

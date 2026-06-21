@@ -2,3 +2,19 @@
 .env
 __pycache__/
 *.pyc
+
+# secrets — never commit (D1: leaked baymax_hello testnet keys were untracked)
+private_keys.json
+
+# committed Redis snapshot (regenerable)
+dump.rdb
+
+# generated Arize trace output
+tracks/
+
+# camera capture artifacts (runtime dumps; ~10MB)
+hardware/camera connection/capture_*.jpg
+hardware/camera connection/capture_*.json
+
+# stray demo image
+Ch-1.jpg

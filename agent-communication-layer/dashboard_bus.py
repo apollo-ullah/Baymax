@@ -16,6 +16,7 @@ import os
 
 TRIGGER_LIST = "baymax:trigger"
 DECISION_LIST = "baymax:decision"
+CRISIS_LIST = "baymax:crisis"
 NARRATION_CHANNEL = "baymax:narration"
 DEFAULT_REDIS_URL = "redis://localhost:6379"
 _SOCKET_TIMEOUT_S = float(os.getenv("BAYMAX_REDIS_TIMEOUT", "2.0"))
@@ -45,6 +46,25 @@ def push_trigger(item, requester=None, quantity=None):
 def pop_trigger():
     """LPOP one queued trigger, or None. Never raises on a malformed entry."""
     raw = _redis().lpop(TRIGGER_LIST)
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+
+
+def push_crisis(crisis_text, requester=None, region=None):
+    """RPUSH a crisis prompt (the dashboard crisis box) onto the crisis list. The
+    FRONT agent LPOPs it and runs start_crisis(source="dashboard")."""
+    payload = {"crisis_text": crisis_text, "requester": requester, "region": region}
+    _redis().rpush(CRISIS_LIST, json.dumps(payload))
+    return payload
+
+
+def pop_crisis():
+    """LPOP one queued crisis prompt, or None. Never raises on a malformed entry."""
+    raw = _redis().lpop(CRISIS_LIST)
     if not raw:
         return None
     try:

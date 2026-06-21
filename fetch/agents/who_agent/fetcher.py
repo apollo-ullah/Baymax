@@ -30,6 +30,7 @@ log = logging.getLogger("who_fetcher")
 # ── Paths ────────────────────────────────────────────────────────────────────
 _AGENT_ROOT = Path(__file__).resolve().parents[1]   # fetch/agents/
 _MOCK_ILLNESS_PATH = _AGENT_ROOT / "illness_agent" / "mock_illness_feed.json"
+_MOCK_CDC_PATH = _AGENT_ROOT / "illness_agent" / "mock_cdc_feed.json"
 
 # Open-Meteo defaults (San Francisco)
 _WEATHER_LAT = float(os.getenv("WEATHER_LATITUDE", "37.7749"))
@@ -42,6 +43,18 @@ if str(_REDIS_SRC) not in sys.path:
 
 from redis_client import get_redis  # noqa: E402
 from forecast import get_forecast, write_forecast  # noqa: E402
+
+# Merge-write helper (read-modify-write that doesn't clobber a concurrent
+# weather/illness slice). Lives in the shared bridge; fall back to a local
+# merge if the `fetch` package isn't importable (e.g. standalone invocation).
+try:
+    from fetch.shared.redis_io import upsert_forecast_items  # noqa: E402
+except Exception:  # pragma: no cover - resolution fallback only
+    def upsert_forecast_items(region: str, new_items: dict) -> dict:
+        existing = get_forecast(region) or {}
+        items = dict(existing.get("items", {}))
+        items.update(new_items)
+        return write_forecast(region, {"items": items})
 
 # ── disease.sh endpoint ─────────────────────────────────────────────────────
 DISEASE_SH_URL = "https://disease.sh/v3/covid-19/historical/all?lastdays=30"
@@ -210,6 +223,10 @@ def reason_with_claude(
             **(forecast_items.get("illness", {})),
             "_source": "mock feed (CDC not integrated)",
         },
+        "cdc_levels": {
+            **(forecast_items.get("cdc", {})),
+            "_source": "mock feed (CDC ILINet stub, not integrated)",
+        },
         "who_covid_30d": {
             "new_cases": covid_stats["cases_30d"],
             "new_deaths": covid_stats["deaths_30d"],
@@ -246,6 +263,7 @@ def reason_with_claude(
         "context_keys": list(context.keys()),
         "weather": context["weather_live"],
         "illness": context["illness_levels"],
+        "cdc": context["cdc_levels"],
         "disease_data": context["who_covid_30d"],
         "hospitals": list((inventory_snapshot or {}).keys()),
         "vision_counts": vision_counts,
@@ -376,6 +394,34 @@ def _read_illness_items(region: str) -> dict:
         return {}
 
 
+# ── CDC helper (mock stub feed — 4th source) ──────────────────────────────────
+
+def _read_cdc_items(region: str) -> dict:
+    """
+    Read CDC/WHO ILINet levels from the mock_cdc_feed.json stub (same per-region
+    {disease -> level} shape as the illness feed). Fail-soft: returns {} on any
+    error (missing file, bad JSON, unknown region) and never raises.
+    Returns {"cdc": {"influenza": "High", ...}} or {}.
+    """
+    try:
+        with open(_MOCK_CDC_PATH) as f:
+            feed = json.load(f)
+        levels = feed.get("regions", {}).get(region, {})
+        log.info(json.dumps({
+            "tag": "INGESTION", "file": "who_agent/fetcher.py",
+            "action": "cdc_feed_read",
+            "source": "mock_cdc_feed.json (stub, CDC not integrated)",
+            "region": region, "levels": levels,
+        }))
+        return {"cdc": levels} if levels else {}
+    except Exception as e:
+        log.warning(json.dumps({
+            "tag": "INGESTION", "file": "who_agent/fetcher.py",
+            "action": "cdc_feed_error", "error": str(e),
+        }))
+        return {}
+
+
 # ── Inventory snapshot helper ─────────────────────────────────────────────────
 
 def _get_inventory_snapshot() -> dict:
@@ -440,32 +486,29 @@ def run_who_update(region: str = "san_francisco") -> dict:
             "trend": "unknown", "trend_pct": 0.0, "last_date": "unknown",
         }
 
-    # Step 2: fetch weather (Open-Meteo, live, no key) + illness (mock feed)
+    # Step 2: fetch weather (Open-Meteo, live, no key) + illness (mock) + CDC (mock stub)
     weather_items = _fetch_weather_items()
     illness_items = _read_illness_items(region)
+    cdc_items     = _read_cdc_items(region)
 
-    # Step 3: merge WHO + weather + illness into forecast:{region}
+    # Step 3: merge WHO + weather + illness + CDC into forecast:{region}.
+    # Use the upsert merge helper (read current items, merge ours, write the
+    # union) so a concurrent weather/illness writer's slice isn't clobbered by a
+    # whole-key overwrite (the old manual r.set raced those writers).
+    our_slice = {
+        "who_covid_30d_cases": covid_stats["cases_30d"],
+        "who_covid_30d_deaths": covid_stats["deaths_30d"],
+        "who_covid_trend": covid_stats["trend"],
+        "who_covid_trend_pct": covid_stats["trend_pct"],
+        "who_last_date": covid_stats["last_date"],
+        "who_source": ATTRIBUTION,
+        **weather_items,
+        **illness_items,
+        **cdc_items,
+    }
     try:
-        r = get_redis()
-        existing_raw = r.get(f"forecast:{region}")
-        existing = json.loads(existing_raw) if existing_raw else {}
-        items = dict(existing.get("items", {}))
-        items.update({
-            "who_covid_30d_cases": covid_stats["cases_30d"],
-            "who_covid_30d_deaths": covid_stats["deaths_30d"],
-            "who_covid_trend": covid_stats["trend"],
-            "who_covid_trend_pct": covid_stats["trend_pct"],
-            "who_last_date": covid_stats["last_date"],
-            "who_source": ATTRIBUTION,
-        })
-        items.update(weather_items)
-        items.update(illness_items)
-        record = {
-            "region": region,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-            "items": items,
-        }
-        r.set(f"forecast:{region}", json.dumps(record))
+        record = upsert_forecast_items(region, our_slice)
+        items = dict(record.get("items", {}))
         log.info(json.dumps({
             "tag": "WHO", "file": "who_agent/fetcher.py",
             "action": "redis_write",
@@ -473,13 +516,15 @@ def run_who_update(region: str = "san_francisco") -> dict:
             "who_fields":     {k: v for k, v in items.items() if k.startswith("who_")},
             "weather_fields": {k: v for k, v in items.items() if k.startswith("weather_")},
             "illness_fields": items.get("illness", {}),
+            "cdc_fields":     items.get("cdc", {}),
         }))
     except Exception as e:
         log.error(json.dumps({
             "tag": "WHO", "file": "who_agent/fetcher.py",
             "action": "redis_write_error", "error": str(e),
         }))
-        items = {}
+        # Still hand Claude what we computed this run, even if the write failed.
+        items = our_slice
 
     # Step 4: gather remaining context for Claude
     inventory_snapshot = _get_inventory_snapshot()
@@ -513,3 +558,9 @@ def run_who_update(region: str = "san_francisco") -> dict:
         }))
 
     return reasoning
+
+
+# Promoted name for the unified ingest orchestrator (WHO + weather + illness +
+# CDC -> forecast -> Claude reasoning). Alias only — run_who_update stays the
+# canonical name imported by ui/app.py and ingest_orchestrator.py.
+run_ingest = run_who_update

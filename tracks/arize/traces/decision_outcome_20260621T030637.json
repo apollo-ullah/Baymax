@@ -1,9 +1,0 @@
-{
-  "trace_name": "decision_outcome",
-  "hospital_id": "hospital_a",
-  "item": "IV Fluids",
-  "recommended_quantity": 150,
-  "actual_quantity": 150,
-  "outcome": "successful_transfer",
-  "improvement_note": "Recommendation matched fulfilled transfer; keep current confidence threshold for similar future cases."
-}

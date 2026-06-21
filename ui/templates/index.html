@@ -131,6 +131,29 @@
   .no-redis { background: #1a0a0a; border: 1px solid #450a0a; border-radius: 8px; padding: 16px; margin: 18px 24px 0; color: #fca5a5; }
   .no-redis strong { color: var(--red); }
 
+  /* ── crisis panel ── */
+  .crisis-panel { background: linear-gradient(180deg,#2a1015,var(--surface)); border: 1px solid #7f1d1d; border-radius: 10px; padding: 14px 16px; margin: 18px 24px 0; }
+  .crisis-panel .crisis-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .crisis-panel .crisis-head .tag { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; padding: 2px 7px; border-radius: 4px; background: #450a0a; color: #fca5a5; }
+  .crisis-panel .crisis-head .title { font-size: 12px; color: var(--text); }
+  .crisis-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .crisis-row input[type=text] { flex: 1; min-width: 220px; background: var(--bg); border: 1px solid var(--border); color: var(--text); font-family: inherit; font-size: 13px; padding: 9px 12px; border-radius: 7px; }
+  .crisis-row input[type=text]:focus { outline: none; border-color: var(--red); }
+  .btn-crisis { background: #b91c1c; color: #fff; border: none; padding: 9px 18px; border-radius: 7px; font-family: inherit; font-size: 13px; cursor: pointer; transition: opacity .15s; }
+  .btn-crisis:hover { opacity: .85; }
+  .btn-crisis:disabled { opacity: .4; cursor: default; }
+  /* crisis active card */
+  .crisis-card { margin-top: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; }
+  .crisis-card .crisis-text { color: var(--text); font-size: 13px; margin-bottom: 8px; }
+  .crisis-card .crisis-status { display: inline-block; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; padding: 2px 8px; border-radius: 4px; background: #1a1200; color: #fb923c; margin-right: 8px; }
+  .crisis-card .crisis-status.confirmed, .crisis-card .crisis-status.settling, .crisis-card .crisis-status.done { background: #052e16; color: #4ade80; }
+  .crisis-card .crisis-status.failed { background: #450a0a; color: #fca5a5; }
+  .crisis-card .crisis-type { font-size: 11px; color: var(--muted); }
+  .at-risk-list { list-style: none; margin-top: 8px; }
+  .at-risk-list li { padding: 4px 0; color: var(--text); font-size: 12px; display: flex; justify-content: space-between; border-bottom: 1px solid #1f2233; }
+  .at-risk-list li:last-child { border: none; }
+  .at-risk-list li .risk { color: var(--orange); font-size: 11px; }
+
   /* ── negotiation timeline ── */
   .neg-event { display:flex; align-items:flex-start; gap:8px; padding:5px 0; border-bottom:1px solid var(--border); font-size:12px; }
   .neg-event:last-child { border:none; }
@@ -191,9 +214,24 @@
   &nbsp;— Data below shows Redis-offline defaults.
 </div>
 
+<!-- Crisis panel -->
+<div class="crisis-panel">
+  <div class="crisis-head">
+    <span class="tag">CRISIS</span>
+    <span class="title">Crisis Response — describe the situation and Baymax will research it, then negotiate supplies</span>
+  </div>
+  <div class="crisis-row">
+    <input type="text" id="crisis-input" placeholder='e.g. "wildfires near Hospital A"'
+           onkeydown="if(event.key==='Enter')runCrisis()">
+    <button class="btn-crisis" id="btn-crisis" onclick="runCrisis()">⚠ Run Crisis Response</button>
+  </div>
+  <!-- Active crisis card (populated from crisis:active; hidden when absent) -->
+  <div class="crisis-card" id="crisis-card" style="display:none"></div>
+</div>
+
 <!-- Action bar -->
 <div class="actions" style="padding-top:18px;">
-  <button id="btn-who" onclick="refreshWho()">↻ Refresh WHO + Claude</button>
+  <button id="btn-who" onclick="refreshWho()">↻ Ingest Data</button>
   <button id="btn-capture" class="secondary" onclick="triggerCapture()">📷 Capture Both</button>
   <button id="btn-negotiate" class="secondary" onclick="runNegotiation()" style="background:#1a1a3b;border-color:#4f46e5;color:#818cf8">⚡ Run Fetch.ai Negotiation</button>
   <button id="btn-bureau" class="secondary" onclick="startBureau()" style="background:#0a1a0a;border-color:#166534;color:#4ade80">▶ Start Bureau</button>
@@ -404,6 +442,8 @@ function render(s) {
   renderClaude(s.reasoning);
   // scenario
   renderScenario(s.scenario);
+  // crisis (active crisis-response card)
+  renderCrisis(s.crisis);
   // inventory
   renderInventory(s.inventory, s.surplus, s.meta);
   // transfers
@@ -616,6 +656,33 @@ function renderScenario(sc) {
     kv('recommendation', (sc.recommendation || {}).status || '–', 'warn');
 }
 
+// CRISIS — active crisis-response card from crisis:active
+function renderCrisis(c) {
+  const el = document.getElementById('crisis-card');
+  if (!el) return;
+  if (!c || (typeof c === 'object' && !c.crisis_text)) {
+    el.style.display = 'none';
+    el.innerHTML = '';
+    return;
+  }
+  const status = (c.status || 'researching');
+  const statusClassName = 'crisis-status ' + String(status).toLowerCase().replace(/\s+/g, '_');
+  let html = `<div class="crisis-text">${escHtml(c.crisis_text)}</div>`;
+  html += `<span class="${statusClassName}">${escHtml(status)}</span>`;
+  if (c.crisis_type) html += `<span class="crisis-type">${escHtml(c.crisis_type)}</span>`;
+  if (c.region) html += `<span class="crisis-type"> · ${escHtml(c.region)}</span>`;
+  const atRisk = c.at_risk || [];
+  if (atRisk.length) {
+    html += '<ul class="at-risk-list">' + atRisk.map(a => {
+      const item = (a && (a.item ?? a.name)) ?? a;
+      const risk = a && (a.risk ?? a.risk_level ?? a.level);
+      return `<li><span>${escHtml(item)}</span>${risk != null ? `<span class="risk">${escHtml(risk)}</span>` : ''}</li>`;
+    }).join('') + '</ul>';
+  }
+  el.innerHTML = html;
+  el.style.display = '';
+}
+
 // INVENTORY
 function renderInventory(inv, surplus, meta) {
   const el = document.getElementById('card-inventory');
@@ -686,12 +753,12 @@ function renderAlerts(alerts) {
 function refreshWho() {
   const btn = document.getElementById('btn-who');
   btn.disabled = true;
-  btn.textContent = '⏳ Fetching WHO + Claude…';
+  btn.textContent = '⏳ Ingesting…';
   fetch('/api/refresh_who', { method: 'POST' })
     .then(r => r.json())
     .then(d => {
       btn.disabled = false;
-      btn.textContent = '↻ Refresh WHO + Claude';
+      btn.textContent = '↻ Ingest Data';
       if (d.ok) {
         toast('WHO data + Claude reasoning updated ✓');
         poll();
@@ -701,8 +768,40 @@ function refreshWho() {
     })
     .catch(e => {
       btn.disabled = false;
-      btn.textContent = '↻ Refresh WHO + Claude';
+      btn.textContent = '↻ Ingest Data';
       toast('Network error: ' + e, true);
+    });
+}
+
+function runCrisis() {
+  const input = document.getElementById('crisis-input');
+  const btn = document.getElementById('btn-crisis');
+  const text = (input.value || '').trim();
+  if (!text) { toast('Enter a crisis description first', true); return; }
+  btn.disabled = true;
+  input.disabled = true;
+  btn.textContent = '⏳ Researching…';
+  fetch('/api/crisis', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ crisis_text: text })
+  })
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) {
+        toast('Crisis response started — research → negotiation incoming ✓');
+        input.value = '';
+        // Crisis milestones arrive on the existing baymax:narration SSE feed and
+        // the crisis card updates via the 3s state poll — no extra stream needed.
+        poll();
+      } else {
+        toast('Crisis error: ' + (d.error || 'unknown'), true);
+      }
+    })
+    .catch(e => toast('Network error: ' + e, true))
+    .finally(() => {
+      btn.disabled = false;
+      input.disabled = false;
+      btn.textContent = '⚠ Run Crisis Response';
     });
 }
 

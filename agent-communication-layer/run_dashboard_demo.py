@@ -71,6 +71,27 @@ def build_bureau():
             ctx, item, requester=requester, quantity_needed=qty,
             reply_to=None, source="dashboard")
 
+    @front.on_interval(period=1.0)
+    async def _poll_dashboard_crisis(ctx):
+        # The dashboard crisis box RPUSHes onto baymax:crisis; research it, pick an
+        # at-risk item, and negotiate (source="dashboard"). One dashboard run at a time.
+        for neg in sp.NEGOTIATIONS.values():
+            if neg.get("reply_to") is None and not neg.get("done"):
+                return
+        crisis = dashboard_bus.pop_crisis() if hasattr(dashboard_bus, "pop_crisis") else None
+        if not crisis:
+            return
+        crisis_text = (crisis.get("crisis_text") or "").strip()
+        if not crisis_text:
+            return
+        requester = crisis.get("requester") or "Hospital A"
+        region = crisis.get("region") or "san_francisco"
+        ctx.logger.info(
+            f"dashboard crisis -> start_crisis({crisis_text!r}, source=dashboard)")
+        await sp.start_crisis(
+            ctx, crisis_text, requester=requester, region=region,
+            reply_to=None, source="dashboard")
+
     @front.on_interval(period=0.5)
     async def _poll_dashboard_decision(ctx):
         dec = dashboard_bus.pop_decision()

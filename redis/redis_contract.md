@@ -70,4 +70,22 @@ so the demo runs without RediSearch.
 - **Type:** String (JSON `{text, item, usage_increase_pct, embedding}`)
 - **Owner:** `vector_history.seed_history`
 - **Reader:** `vector_history.find_similar_periods`
-- **Why it matters:** Stores embedded past usage periods so we can recall similar historical events (local cosine similarity, no RediSearch needed).
+- **Why it matters:** Stores embedded past usage periods so we can recall similar historical events (local cosine similarity, no RediSearch needed). _Status: P2 / not on the live demo path — only `demo_run` uses it._
+
+### `reasoning:latest`
+- **Type:** String (JSON `{risk_level, priority_items, reasoning, recommended_action, updated_at}`)
+- **Owner:** `who_agent/fetcher.run_who_update` (the "Ingest Data" loop); the crisis-research seam may also write it
+- **Reader:** dashboard (`ui/app.py`)
+- **Why it matters:** Claude's proactive supply-risk recommendation — the output of the ingest/forecast loop. _(Previously undocumented; added in the realignment.)_
+
+### `crisis:active`
+- **Type:** String (JSON `{crisis_text, crisis_type, region, at_risk:[{item, risk, rationale}], rationale, status, created_at, updated_at}`)
+- **Owner:** dashboard `POST /api/crisis` seeds it (`status="researching"`); the agent layer's `start_crisis` fills the research result (`status="researched"`). Helpers: `redis/src/crisis.py`, agent-side `redis_inventory.write_crisis_active`.
+- **Reader:** dashboard
+- **Why it matters:** The front-of-funnel for both demo surfaces — the user's crisis prompt + the inferred crisis type + ranked at-risk supplies. _(New in the realignment.)_
+
+### `baymax:narration`
+- **Type:** Pub/Sub channel
+- **Owner:** FRONT agent narration sink (`agent-communication-layer/dashboard_bus.py`)
+- **Reader:** dashboard SSE (`ui/app.py`, `scan_dashboard.py`)
+- **Why it matters:** The channel the dashboard ACTUALLY subscribes to for live negotiation/crisis/ingest milestones. _(Previously undocumented. NOTE: the legacy `channels:events` / `channels:alerts` above currently have no live subscriber — see SCOPE_AUDIT.md; retire or wire in D4.)_

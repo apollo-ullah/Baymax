@@ -103,22 +103,28 @@ All commands run from inside the relevant track directory.
 
 ## Quickstart — run the negotiation locally
 
+> **Naming note:** the product is *Stockpile*, but the code/env vars use the `baymax_*` / `BAYMAX_*` prefix (a rename was deferred to avoid drifting agent seed-addresses). Commands below use the live `baymax_*` names.
+
 ```bash
 cd agent-communication-layer
-python -m venv .venv && source .venv/bin/activate     # Python 3.12+
+python -m venv .venv && source .venv/bin/activate     # Python 3.12+ (or use the sibling venv per agent-communication-layer/CLAUDE.md)
 pip install -r requirements.txt
 
 # 3-agent negotiation in one process; self-exits when done.
-STOCKPILE_EXIT_WHEN_DONE=1 python stockpile_agents.py
+BAYMAX_EXIT_WHEN_DONE=1 python baymax_agents.py
 ```
 
-Pick the scenario with `STOCKPILE_ITEM`:
+Pick the scenario with `BAYMAX_ITEM`:
 
-| `STOCKPILE_ITEM` | Demonstrates |
+| `BAYMAX_ITEM` | Demonstrates |
 | :-- | :-- |
 | `"IV fluids"` (default) | **Split** across two facilities (150 + 50) |
 | `"saline"` | **Full cover** by a single facility |
 | `"sutures"` | **No offer** — graceful escalation to manual procurement |
+
+New in the realignment — start from a **crisis** instead of a named item, on either surface:
+- ASI:One / chat: *"wildfires near Hospital A"* → research infers at-risk supplies → negotiation; or *"ingest data"* → forecast loop + proactive recommendation.
+- Dashboard: a crisis prompt box + an **"Ingest Data"** button drive the same engine.
 
 For the live ASI:One + Agentverse path (per-agent Mailbox mode), Redis bring-up, the camera→Redis loop, and the full requirement matrix, see [`agent-communication-layer/README.md`](agent-communication-layer/README.md) and [`agent-communication-layer/DELIVERABLES.md`](agent-communication-layer/DELIVERABLES.md).
 

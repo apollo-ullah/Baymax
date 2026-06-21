@@ -11,6 +11,8 @@ Endpoints:
     GET  /image/latest  latest capture JPEG (or placeholder)
     POST /api/capture   run mock capture (--counts a=4,b=2) → Redis
     POST /api/refresh_who   re-run WHO fetch + Claude reasoning → Redis
+    POST /api/ingest        alias for /api/refresh_who
+    POST /api/crisis        push a crisis onto baymax:crisis + seed crisis:active
     POST /api/negotiate     push trigger to bureau (non-blocking)
     POST /api/bureau/start  start/restart the bureau subprocess
     GET  /api/narration     SSE stream of narration events
@@ -60,7 +62,17 @@ REGION = os.getenv("FORECAST_REGION", "san_francisco")
 HARDWARE_DIR = Path(__file__).resolve().parents[1] / "hardware" / "camera connection"
 SYNC_SCRIPT = HARDWARE_DIR / "sync_to_redis.py"
 AGENT_DIR = Path(__file__).resolve().parents[1] / "agent-communication-layer"
-AGENT_VENV_PYTHON = AGENT_DIR / ".venv" / "bin" / "python"
+# The venv + secrets live in the SIBLING dir (a directory rename moved them out of
+# agent-communication-layer/). Resolve it there; allow an override; and fall back to
+# whatever interpreter is running this app (correct when app.py is launched with the
+# sibling venv). Prevents a FileNotFoundError when spawning the Bureau subprocess.
+_SIBLING_VENV_PYTHON = (
+    Path(__file__).resolve().parents[1]
+    / "adyan-agent-communication-layer" / ".venv" / "bin" / "python"
+)
+AGENT_VENV_PYTHON = Path(os.getenv("BAYMAX_AGENT_PYTHON") or _SIBLING_VENV_PYTHON)
+if not AGENT_VENV_PYTHON.exists():
+    AGENT_VENV_PYTHON = Path(sys.executable)
 
 # ── Bureau subprocess ─────────────────────────────────────────────────────────
 _bureau_proc: subprocess.Popen | None = None
@@ -196,7 +208,7 @@ def _safe_json(raw):
 def _push_decision(req_id: str, decision: str):
     try:
         r = _redis()
-        r.lpush("baymax:decision", json.dumps({"req_id": req_id, "decision": decision}))
+        r.rpush("baymax:decision", json.dumps({"req_id": req_id, "decision": decision}))
         _awaiting_approval.pop(req_id, None)
         log.info("[decision] pushed %s for req_id=%s", decision, req_id)
     except Exception as exc:
@@ -206,7 +218,7 @@ def _push_decision(req_id: str, decision: str):
 def _push_trigger(item: str, requester: str = "Hospital A", quantity: int | None = None):
     try:
         r = _redis()
-        r.lpush("baymax:trigger", json.dumps({"item": item, "requester": requester, "quantity": quantity}))
+        r.rpush("baymax:trigger", json.dumps({"item": item, "requester": requester, "quantity": quantity}))
         log.info("[trigger] pushed item=%s qty=%s", item, quantity)
     except Exception as exc:
         log.warning("[trigger] push failed: %s", exc)
@@ -223,6 +235,7 @@ def get_state() -> dict:
         "surplus": {},
         "meta": {},
         "scenario": None,
+        "crisis": None,
         "vision": None,
         "vision_image_available": False,
         "transfers": [],
@@ -259,6 +272,10 @@ def get_state() -> dict:
 
     # scenario:heatstroke
     state["scenario"] = _safe_json(r.get("scenario:heatstroke"))
+
+    # crisis:active — active crisis-response card (seeded by /api/crisis, then
+    # overwritten by the agent with crisis_type + at_risk)
+    state["crisis"] = _safe_json(r.get("crisis:active"))
 
     # vision:latest
     state["vision"] = _safe_json(r.get("vision:latest"))
@@ -460,6 +477,60 @@ def api_refresh_who():
         return jsonify({"ok": True, "result": result})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/ingest", methods=["POST"])
+def api_ingest():
+    """Alias for /api/refresh_who — runs the WHO+weather+illness+Claude ingest."""
+    return api_refresh_who()
+
+
+@app.route("/api/crisis", methods=["POST"])
+def api_crisis():
+    """
+    Kick off a crisis-response negotiation. Pushes the crisis onto the
+    `baymax:crisis` list (FRONT-agent poller does LPOP → RPUSH gives FIFO) and
+    seeds the `crisis:active` card so the UI shows "researching…" immediately.
+    The agent overwrites crisis:active with the researched result moments later;
+    all milestones arrive on the existing baymax:narration feed.
+
+    Body (JSON):
+        crisis_text — required, non-empty
+        requester   — optional (default "Hospital A")
+        region      — optional (default "san_francisco")
+    """
+    data = request.get_json(silent=True) or {}
+    crisis_text = (data.get("crisis_text") or "").strip()
+    if not crisis_text:
+        return jsonify({"ok": False, "error": "crisis_text is required"}), 400
+
+    requester = data.get("requester") or "Hospital A"
+    region = data.get("region") or "san_francisco"
+
+    log.info(json.dumps({
+        "tag": "CRISIS", "file": "ui/app.py",
+        "action": "crisis_triggered",
+        "crisis_text": crisis_text, "requester": requester, "region": region,
+    }))
+
+    try:
+        r = _redis()
+        r.rpush("baymax:crisis", json.dumps({
+            "crisis_text": crisis_text,
+            "requester": requester,
+            "region": region,
+        }))
+        r.set("crisis:active", json.dumps({
+            "crisis_text": crisis_text,
+            "region": region,
+            "requester": requester,
+            "status": "researching",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }))
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 503
+
+    return jsonify({"ok": True, "crisis_text": crisis_text})
 
 
 def _vision_to_negotiation_params() -> dict:

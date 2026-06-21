@@ -60,6 +60,8 @@ from baymax_agents import (
     attach_front_handlers,
     find_awaiting_approval,
     resume_after_admin_decision,
+    run_ingest,
+    start_crisis,
     start_negotiation,
     start_order,
 )
@@ -115,6 +117,7 @@ _MILESTONE_ECHO_RE = re.compile(
     r"^\s*\*\*(?:shortfall_detected|requesting|collecting_offers|evaluating|"
     r"proposing|settling|confirmed|failed|re_planning|idle|"
     r"awaiting_approval|ordering|ordered|"
+    r"researching|researched|ingesting|ingested|"
     r"payment_confirmed|payment_failed)\*\*",
     re.IGNORECASE,
 )
@@ -141,6 +144,32 @@ _REQUEST_CUE_RE = re.compile(
 _ORDER_CUE_RE = re.compile(
     r"\b(order|buy|purchase|procure)\b", re.IGNORECASE,
 )
+
+# Explicit "ingest data / refresh the forecast" command (the dashboard's
+# "Ingest Data" button has a chat twin). Checked FIRST — it names no supply item.
+_INGEST_CUE_RE = re.compile(
+    r"\b(ingest(\s+data)?|run\s+ingest|"
+    r"(refresh|run|update|pull)\s+(the\s+)?(latest\s+)?(forecast|data|signals))\b",
+    re.IGNORECASE,
+)
+
+# A stated CRISIS with no specific item named — routes to the research seam,
+# which infers the crisis type + ranked at-risk supplies, then negotiates. Only
+# consulted when no KNOWN item is named (so an explicit "short on saline" still
+# takes the direct request path). Loose by design: an unmatched-but-crisis-ish
+# message routes to research, which degrades gracefully to a default brief.
+_CRISIS_CUE_RE = re.compile(
+    r"\b(wildfire|wild\s?fire|bushfire|wildfires|fire|smoke|"
+    r"heat\s?wave|heatstroke|heat\s?stroke|extreme\s+heat|"
+    r"flu|influenza|outbreak|surge|pandemic|epidemic|rsv|respiratory|"
+    r"earthquake|quake|flood|flooding|storm|hurricane|typhoon|tornado|"
+    r"disaster|mass\s+casualty|crisis|catastrophe|emergency)\b",
+    re.IGNORECASE,
+)
+
+# Default forecast region for crisis/ingest when none is parsed (matches the WHO
+# fetcher + mock_illness_feed region keys).
+_DEFAULT_REGION = "san_francisco"
 
 # Admin-decision keyword groups (for parse_decision at the AWAITING_APPROVAL gate).
 _DECISION_APPROVE_RE = re.compile(
@@ -338,7 +367,24 @@ def parse_intent(text: str) -> dict:
         return {"kind": "ignored", "reason": "echo_chatter"}
 
     tl = text.lower()
+
+    # Explicit "ingest data / refresh forecast" command — names no supply item,
+    # so it is checked BEFORE item matching. (Dashboard "Ingest Data" twin.)
+    if _INGEST_CUE_RE.search(text):
+        return {"kind": "ingest", "region": _DEFAULT_REGION}
+
     item = _match_item(tl)
+
+    # A stated crisis with NO specific item named -> the research seam infers the
+    # crisis type + ranked at-risk supplies, then negotiates. (When an item IS
+    # named, fall through to the direct request/order path below.)
+    if item is None and _CRISIS_CUE_RE.search(text):
+        return {
+            "kind": "crisis",
+            "crisis_text": text,
+            "requester": _match_facility(text) or REQUESTER,
+            "region": _DEFAULT_REGION,
+        }
 
     # A pure greeting / help probe with no item named -> capabilities.
     if item is None and _GREETING_RE.match(text):
@@ -520,7 +566,7 @@ async def on_intent(ctx: Context, sender: str, text: str) -> None:
         await ctx.send(sender, create_text_chat(_CAPABILITIES, end_session=False))
         return
 
-    if kind not in ("request", "order"):
+    if kind not in ("request", "order", "crisis", "ingest"):
         await ctx.send(sender, create_text_chat(_UNPARSEABLE_HELP, end_session=True))
         return
 
@@ -532,6 +578,30 @@ async def on_intent(ctx: Context, sender: str, text: str) -> None:
             f"ignoring likely echo")
         return
     _LAST_ACCEPTED_INTENT[sender] = time.monotonic()
+
+    # Ingest: run the forecast loop and narrate the proactive recommendation.
+    # (No supply item; handled before the item-bearing kinds below.)
+    if kind == "ingest":
+        region = parsed.get("region") or _DEFAULT_REGION
+        await ctx.send(sender, create_text_chat(
+            "On it — ingesting live forecast signals (WHO + weather + illness + CDC). "
+            "I'll report the proactive supply recommendation.", end_session=False))
+        await run_ingest(ctx, region=region, reply_to=sender)
+        return
+
+    # Crisis: research the crisis -> pick an at-risk item -> negotiate. The whole
+    # chain narrates back into this chat (reply_to=sender).
+    if kind == "crisis":
+        crisis_text = parsed.get("crisis_text") or text
+        requester = parsed.get("requester") or REQUESTER
+        region = parsed.get("region") or _DEFAULT_REGION
+        await ctx.send(sender, create_text_chat(
+            f"Understood — researching the crisis to find at-risk supplies for "
+            f"{requester}, then I'll check the network and narrate each step.",
+            end_session=False))
+        await start_crisis(ctx, crisis_text, requester=requester, region=region,
+                           reply_to=sender)
+        return
 
     item = parsed["item"]
     requester = parsed.get("requester") or REQUESTER

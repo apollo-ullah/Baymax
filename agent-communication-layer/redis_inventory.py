@@ -176,3 +176,48 @@ def redis_get_inventory(hospital: str, item: str) -> InventoryState:
         updated_at=record.get("updated_at", InventoryState.updated_at),
         present=True,
     )
+
+
+# ---------------------------------------------------------------------------
+# Crisis brief (crisis:active) — fail-soft writer for the agent layer.
+# start_crisis calls this to publish the inferred crisis brief for the dashboard.
+# It NO-OPS (returns False) when Redis is disabled or unreachable, so the crisis
+# flow runs identically offline (the negotiation never depends on this write).
+# ---------------------------------------------------------------------------
+
+def write_crisis_active(payload: dict) -> bool:
+    """Best-effort write of the active crisis brief to `crisis:active` (JSON
+    string). Returns True on success, False when Redis is disabled/unavailable."""
+    if not redis_enabled():
+        return False
+    try:
+        client = _client()
+        client.set(schema.CRISIS_ACTIVE_KEY, json.dumps(payload))
+        return True
+    except Exception:  # noqa: BLE001 — fail-soft; crisis flow must not depend on this
+        return False
+
+
+def get_crisis_active() -> Optional[dict]:
+    """Read the active crisis brief, or None when disabled/unavailable/unset."""
+    if not redis_enabled():
+        return None
+    try:
+        value = _client().get(schema.CRISIS_ACTIVE_KEY)
+        return json.loads(value) if value else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def write_transfer_record(record: dict) -> bool:
+    """Fail-soft XADD of a confirmed transfer onto the `transfers` stream so the
+    dashboard's transfer panel reflects REAL settlements (previously demo-only).
+    Matches redis/src/transfers.py's `{"data": json}` entry shape. No-op
+    (returns False) when Redis is disabled/unavailable."""
+    if not redis_enabled():
+        return False
+    try:
+        _client().xadd(schema.TRANSFERS_STREAM, {"data": json.dumps(record)})
+        return True
+    except Exception:  # noqa: BLE001 — never let an audit write break settlement
+        return False

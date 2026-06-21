@@ -469,3 +469,209 @@ def approve_release(facility: str, item: str, qty: int) -> bool:
         if require else "auto-approved + notified",
     )
     return not require
+
+
+# ---------------------------------------------------------------------------
+# SEAM 5 — crisis research (Claude, the realignment's new front-of-funnel).
+#
+# The demo's two surfaces now start from a stated CRISIS ("wildfires near
+# Hospital A"), not a hand-named item. research_crisis() infers the crisis type
+# and a RANKED list of at-risk supplies (constrained to the items the inventory
+# layer knows), so the agent layer can pick a top at-risk item and drive the
+# EXISTING negotiation chain. Mirrors get_inventory / rank_offers / order:
+# delegates to claude_research.py when BAYMAX_CLAUDE_RESEARCH=1, else a
+# deterministic keyword mock; fail-closed to the mock on ANY error so the
+# offline harnesses need no key and the funnel never hangs.
+# ---------------------------------------------------------------------------
+
+# Canonical items the inventory layer (and the negotiation) actually know about.
+# Kept here so the mock + the Claude backend can both clamp to them.
+KNOWN_ITEMS = ("IV fluids", "saline", "sutures")
+
+
+@dataclass
+class AtRiskSupply:
+    """One supply the research step flags as at risk for a crisis type.
+    `item` is a canonical KNOWN_ITEMS string so it can feed get_inventory /
+    start_negotiation directly."""
+
+    item: str
+    risk: str = "elevated"   # high | elevated | moderate
+    rationale: str = ""
+
+
+@dataclass
+class CrisisBrief:
+    """research_crisis() output: the inferred crisis type plus a ranked
+    at-risk-supply list (highest risk first) and a chat-ready rationale."""
+
+    crisis_text: str
+    crisis_type: str = "unknown"          # wildfire|heatwave|flu_surge|earthquake|storm|unknown
+    region: str = "san_francisco"
+    at_risk: List[AtRiskSupply] = field(default_factory=list)
+    rationale: str = ""
+    present: bool = True                  # False => could not classify at all
+
+    @property
+    def top_item(self) -> Optional[str]:
+        """The highest-risk at-risk item, or None if the brief is empty."""
+        return self.at_risk[0].item if self.at_risk else None
+
+
+# crisis-type keyword profiles → ranked at-risk supplies (mock). First match
+# wins; every profile returns at least one KNOWN_ITEMS entry so the downstream
+# negotiation always has a valid item, offline, with no key.
+_CRISIS_PROFILES: List[tuple] = [
+    (("wildfire", "fire", "smoke", "burn", "blaze"), "wildfire", [
+        AtRiskSupply("saline", "high", "Burn irrigation + wound flushing spike with fire/burn casualties."),
+        AtRiskSupply("IV fluids", "high", "Smoke-inhalation + burn-shock resuscitation drives IV demand."),
+        AtRiskSupply("sutures", "elevated", "Lacerations and surgical debridement from trauma."),
+    ]),
+    (("heatwave", "heat wave", "heatstroke", "heat stroke", "extreme heat"), "heatwave", [
+        AtRiskSupply("IV fluids", "high", "Heatstroke + dehydration cases need aggressive rehydration."),
+        AtRiskSupply("saline", "elevated", "Volume resuscitation for severe dehydration."),
+    ]),
+    (("flu", "influenza", "respiratory", "covid", "outbreak", "surge", "pandemic", "rsv"), "flu_surge", [
+        AtRiskSupply("IV fluids", "high", "Respiratory-illness surge inflates inpatient fluid use."),
+        AtRiskSupply("saline", "elevated", "Hydration + medication dilution for admitted patients."),
+    ]),
+    (("earthquake", "quake", "collapse", "crash", "mass casualty", "trauma", "explosion"), "earthquake", [
+        AtRiskSupply("sutures", "high", "Mass-casualty lacerations + surgical repair."),
+        AtRiskSupply("IV fluids", "high", "Trauma/hemorrhage resuscitation."),
+        AtRiskSupply("saline", "elevated", "Wound irrigation + volume support."),
+    ]),
+    (("flood", "storm", "hurricane", "typhoon", "tornado"), "storm", [
+        AtRiskSupply("IV fluids", "elevated", "Displacement + injury caseload raises fluid demand."),
+        AtRiskSupply("saline", "elevated", "Wound care for storm injuries."),
+        AtRiskSupply("sutures", "moderate", "Lacerations from debris."),
+    ]),
+]
+
+# Default when no keyword matches — still actionable (the canonical demo item).
+_CRISIS_DEFAULT = ("unknown", [
+    AtRiskSupply("IV fluids", "elevated", "General surge contingency: IV fluids are the first consumable to run short."),
+    AtRiskSupply("saline", "moderate", "Broadly used across most acute presentations."),
+])
+
+
+def _mock_research_crisis(crisis_text: str, region: str) -> CrisisBrief:
+    text = (crisis_text or "").lower()
+    for keywords, ctype, at_risk in _CRISIS_PROFILES:
+        if any(kw in text for kw in keywords):
+            top = at_risk[0]
+            return CrisisBrief(
+                crisis_text=crisis_text, crisis_type=ctype, region=region,
+                at_risk=list(at_risk),
+                rationale=(
+                    f"Crisis classified as '{ctype}'. Highest supply risk: {top.item} "
+                    f"({top.risk}) — {top.rationale}"
+                ),
+            )
+    ctype, at_risk = _CRISIS_DEFAULT
+    top = at_risk[0]
+    return CrisisBrief(
+        crisis_text=crisis_text, crisis_type=ctype, region=region,
+        at_risk=list(at_risk),
+        rationale=(
+            f"Could not match a specific crisis type; treating as a general surge. "
+            f"Prioritising {top.item} ({top.risk})."
+        ),
+    )
+
+
+def research_crisis(crisis_text: str, region: str = "san_francisco") -> CrisisBrief:
+    """Infer the crisis type + ranked at-risk supplies from a natural-language
+    crisis statement.
+
+    BAYMAX_CLAUDE_RESEARCH=1 -> delegate to claude_research.research_crisis_via_claude
+    (Claude, structured tool-use), clamped to KNOWN_ITEMS. On ANY failure
+    (no key, API error, malformed output, lib absent) fall back to the
+    deterministic keyword mock below. Default (no env) = mock, so offline
+    harnesses need no network. SYNC: async callers wrap with asyncio.to_thread().
+    """
+    import logging
+
+    import claude_research  # lazy: keeps the anthropic SDK optional
+
+    if claude_research.claude_research_enabled():
+        try:
+            brief = claude_research.research_crisis_via_claude(crisis_text, region)
+            logging.getLogger("baymax.research").info(
+                "[research] backend=claude type=%s top=%s at_risk=%s",
+                brief.crisis_type, brief.top_item, [a.item for a in brief.at_risk],
+            )
+            return brief
+        except Exception as exc:  # noqa: BLE001 — fail-closed to the mock
+            logging.getLogger("baymax.research").warning(
+                "[research] backend=claude FAILED (%s) -> mock fallback", exc,
+            )
+    brief = _mock_research_crisis(crisis_text, region)
+    logging.getLogger("baymax.research").info(
+        "[research] backend=mock type=%s top=%s at_risk=%s",
+        brief.crisis_type, brief.top_item, [a.item for a in brief.at_risk],
+    )
+    return brief
+
+
+# ---------------------------------------------------------------------------
+# SEAM 6 — forecast ingest (the "Ingest Data" loop). Runs the WHO + weather +
+# illness (+ CDC stub) orchestrator and returns Claude's proactive supply-risk
+# recommendation. Mirrors the other seams: delegates to ingest_orchestrator.py
+# (which bridges to fetch/agents/who_agent) when BAYMAX_INGEST=1, else a
+# deterministic mock; fail-closed to the mock so the offline harnesses never
+# pull the fetch/Redis stack.
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ForecastRecommendation:
+    """ingest_forecast() output — the proactive recommendation surfaced after an
+    ingest run. Same shape as the Redis `reasoning:latest` key the dashboard
+    already renders."""
+
+    risk_level: str = "low"               # low | medium | high | critical
+    priority_items: List[str] = field(default_factory=list)
+    reasoning: str = ""
+    recommended_action: str = ""
+    region: str = "san_francisco"
+    updated_at: str = ""
+
+
+def _mock_ingest_forecast(region: str) -> ForecastRecommendation:
+    return ForecastRecommendation(
+        risk_level="medium",
+        priority_items=["IV fluids", "saline"],
+        reasoning=(
+            "Mock ingest (no live feeds): seasonal illness + warm-weather signals "
+            "suggest elevated fluid demand over the next 7 days."
+        ),
+        recommended_action=(
+            "Pre-position IV fluids toward Hospital A; review surplus at B/C before a shortfall forms."
+        ),
+        region=region,
+    )
+
+
+def ingest_forecast(region: str = "san_francisco") -> ForecastRecommendation:
+    """Run the forecast ingest loop (WHO + weather + illness + CDC stub → Redis →
+    Claude reasoning) and return the proactive recommendation.
+
+    BAYMAX_INGEST=1 -> delegate to ingest_orchestrator.run_ingest (which calls the
+    real WHO fetcher). On ANY failure fall back to the deterministic mock. SYNC:
+    async callers wrap with asyncio.to_thread()."""
+    import logging
+
+    try:
+        import ingest_orchestrator  # lazy: keeps the fetch/Redis stack optional
+
+        if ingest_orchestrator.ingest_enabled():
+            rec = ingest_orchestrator.run_ingest(region)
+            logging.getLogger("baymax.ingest").info(
+                "[ingest] backend=live region=%s risk=%s priority=%s",
+                region, rec.risk_level, rec.priority_items,
+            )
+            return rec
+    except Exception as exc:  # noqa: BLE001 — fail-closed to the mock (missing stack too)
+        logging.getLogger("baymax.ingest").warning(
+            "[ingest] backend=live FAILED for region=%s (%s) -> mock fallback", region, exc,
+        )
+    return _mock_ingest_forecast(region)
