@@ -162,6 +162,38 @@ def _trace(event_type: str, **attrs) -> None:
 # chat sender, set by FRONT), also stream the milestone back as a ChatMessage.
 # ---------------------------------------------------------------------------
 
+# Friendly in-chat labels. ASI:One renders the bold prefix to a human, so map the
+# machine state name to an emoji + readable label. This affects ONLY the chat text
+# — the narration-sink payload keeps the raw `state` value, which the dashboard /
+# Next.js PipelineEvent mapping is keyed on and must stay frozen.
+_CHAT_LABELS = {
+    "idle":               "💤 No action needed",
+    "shortfall_detected": "🔻 Shortfall detected",
+    "requesting":         "📡 Broadcasting request",
+    "collecting_offers":  "📥 Collecting offers",
+    "evaluating":         "🧠 Evaluating offers",
+    "re_planning":        "🔄 Re-planning",
+    "proposing":          "📋 Composing transfer",
+    "awaiting_approval":  "⏸️ Awaiting your approval",
+    "settling":           "💸 Settling on testnet",
+    "confirmed":          "✅ Confirmed",
+    "ordering":           "🛒 Ordering externally",
+    "ordered":            "✅ Order placed",
+    "failed":             "⚠️ Unresolved",
+    # one-off crisis / vision / ingest milestones (see _emit)
+    "researching":        "🔎 Researching crisis",
+    "researched":         "🔎 Crisis assessed",
+    "scanning":           "📷 Scanning shelf",
+    "ingesting":          "📡 Ingesting live signals",
+}
+
+
+def _chat_label(key: str) -> str:
+    """Human-facing label for the ASI:One chat bold prefix. Falls back to a
+    Title-Cased version of the raw state so a new state never shows snake_case."""
+    return _CHAT_LABELS.get(key, key.replace("_", " ").title())
+
+
 async def _step(ctx: Context, neg: dict, state: NegotiationState, detail: str,
                 narrate: bool = False, final: bool = False):
     neg["state"] = state
@@ -171,7 +203,7 @@ async def _step(ctx: Context, neg: dict, state: NegotiationState, detail: str,
     if SPARSE_NARRATION and not final:
         should_narrate = narrate and state in _NARRATE_STATES
     if reply_to and should_narrate:
-        await ctx.send(reply_to, create_text_chat(f"**{state.value}** — {detail}",
+        await ctx.send(reply_to, create_text_chat(f"**{_chat_label(state.value)}** — {detail}",
                                                   end_session=final))
     if _NARRATION_SINK is not None and (narrate or final):
         try:
@@ -191,7 +223,7 @@ async def _emit(ctx: Context, *, reply_to: str | None, source: str, label: str,
     so protocol.py stays frozen."""
     ctx.logger.info(f"[{label.upper()}] {detail}")
     if reply_to:
-        await ctx.send(reply_to, create_text_chat(f"**{label}** — {detail}",
+        await ctx.send(reply_to, create_text_chat(f"**{_chat_label(label)}** — {detail}",
                                                   end_session=final))
     if _NARRATION_SINK is not None:
         try:
