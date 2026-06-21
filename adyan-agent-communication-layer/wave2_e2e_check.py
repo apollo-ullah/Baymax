@@ -25,8 +25,11 @@ import os
 # Offline test config: skip the on-chain query, let the BUYER drive process exit,
 # keep the offer window short. Must be set before importing the agent modules.
 os.environ["PAYMENT_VERIFY_ONCHAIN"] = "false"
+os.environ["BAYMAX_REDIS"] = "0"                    # deterministic mock inventory
 os.environ.pop("BAYMAX_EXIT_WHEN_DONE", None)  # don't exit at CONFIRMED; pay first
 os.environ.setdefault("BAYMAX_OFFER_TIMEOUT", "3.0")
+os.environ["BAYMAX_SPARSE_NARRATION"] = "0"  # surface the AWAITING_APPROVAL prompt
+os.environ.setdefault("BAYMAX_APPROVAL_TIMEOUT", "60")
 
 import agent_base  # noqa: F401,E402  (installs the Python 3.14 event loop first)
 
@@ -77,6 +80,10 @@ async def _buyer_on_chat(ctx: Context, sender: str, msg: ChatMessage):
     for item in msg.content:
         if isinstance(item, TextContent):
             ctx.logger.info(f"[buyer<-chat] {item.text}")
+            if "awaiting_approval" in item.text.lower() and not _ticks.get("approved"):
+                _ticks["approved"] = True
+                ctx.logger.info("[buyer] Admin decision -> 'approve' (authorize trade).")
+                await ctx.send(sender, create_text_chat("approve"))
 
 
 @buyer_chat.on_message(ChatAcknowledgement)
