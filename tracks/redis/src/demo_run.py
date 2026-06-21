@@ -11,12 +11,14 @@ from seed_demo_data import (
     seed_forecast,
     seed_hospital_meta,
     seed_inventory,
+    seed_scenarios,
     seed_surplus,
 )
 from inventory import get_inventory
 from forecast import get_forecast
 from alerts import detect_shortfall_and_publish
 from transfers import get_recent_transfers, log_transfer
+from scenario import get_scenario
 from vector_history import find_similar_periods, seed_history
 
 
@@ -39,6 +41,7 @@ def main():
     seed_inventory()
     seed_surplus()
     seed_forecast()
+    seed_scenarios()
 
     section("3. hospital_a inventory")
     inventory = get_inventory("hospital_a")
@@ -47,6 +50,9 @@ def main():
     section("4. san_francisco forecast")
     forecast = get_forecast("san_francisco")
     print(json.dumps(forecast, indent=2))
+
+    section("4B. Heatstroke scenario profile")
+    print(json.dumps(get_scenario("heatstroke"), indent=2))
 
     section("5. Detect shortfalls for hospital_a")
     detect_shortfall_and_publish("hospital_a", "san_francisco")

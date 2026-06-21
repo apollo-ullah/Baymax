@@ -54,6 +54,12 @@ so the demo runs without RediSearch.
 - **Reader:** live dashboard / notification subscribers
 - **Why it matters:** Instantly pushes critical and warning alerts to anyone watching.
 
+### `scenario:{id}`
+- **Type:** JSON String
+- **Owner:** `scenario.write_scenario`, `seed_demo_data.seed_scenarios`
+- **Reader:** `scenario.get_scenario`, dashboard / reasoning layer
+- **Why it matters:** Stores a high-level operational scenario linking disease, required supplies, facilities, forecast status, and recommendation status.
+
 ### `history:usage:{id}`
 - **Type:** String (JSON `{text, item, usage_increase_pct, embedding}`)
 - **Owner:** `vector_history.seed_history`
