@@ -54,6 +54,18 @@ so the demo runs without RediSearch.
 - **Reader:** live dashboard / notification subscribers
 - **Why it matters:** Instantly pushes critical and warning alerts to anyone watching.
 
+### `scenario:{id}`
+- **Type:** JSON String
+- **Owner:** `scenario.write_scenario`, `seed_demo_data.seed_scenarios`
+- **Reader:** `scenario.get_scenario`, dashboard / reasoning layer
+- **Why it matters:** Stores a high-level operational scenario linking disease, required supplies, facilities, forecast status, and recommendation status.
+
+### `vision:latest`
+- **Type:** JSON String
+- **Owner:** `vision_sync.write_latest_vision_result`, `vision_sync.sync_vision_counts_to_redis`
+- **Reader:** `vision_sync.get_latest_vision_result`, dashboard
+- **Why it matters:** Stores the latest raw Claude Vision inventory detection output (counts only, no percentages).
+
 ### `history:usage:{id}`
 - **Type:** String (JSON `{text, item, usage_increase_pct, embedding}`)
 - **Owner:** `vector_history.seed_history`

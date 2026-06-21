@@ -23,6 +23,8 @@ Copy `.env.example` to `.env` if you do not have one yet. The default already po
 | `channels:events` | Pub/Sub | Live inventory, forecast, and transfer events |
 | `channels:alerts` | Pub/Sub | Live alert notifications |
 | `history:usage:{id}` | String JSON | Embedded past usage periods for vector-style recall |
+| `scenario:{id}` | String JSON | Optional demo scenario profile (e.g. `scenario:heatstroke`) |
+| `vision:latest` | String JSON | Latest raw camera-derived inventory counts (no percentages) |
 
 ## 3. How to Run
 
@@ -40,7 +42,13 @@ python3 src/demo_run.py
 - Forecast: read from `forecast:san_francisco`
 - Alerts: read history from `alerts:log`, or subscribe live to `channels:alerts`
 - Transfers: read from the `transfers` stream
+- Optional scenario profile: read from `scenario:heatstroke` (demo scenario)
+- Raw camera-derived inventory counts: read from `vision:latest` (counts only, no percentages)
 
-## 5. Important
+## 5. Optional Scenario Profile
+
+`scenario:heatstroke` — optional demo scenario profile linking Heatstroke, required supplies, facility placeholders, forecast status, and recommendation status. Read it with `scenario.get_scenario("heatstroke")`.
+
+## 6. Important
 
 Redis core is tested and working. Do not change Redis key names without telling the Redis owner because other tracks depend on the exact names above.

@@ -7,7 +7,13 @@ import json
 from datetime import datetime, timezone
 
 from redis_client import get_redis
-from schema import forecast_key, inventory_key, meta_key, surplus_key
+from schema import (
+    forecast_key,
+    inventory_key,
+    meta_key,
+    scenario_key,
+    surplus_key,
+)
 
 HOSPITALS = {
     "hospital_a": {
@@ -91,6 +97,38 @@ FORECAST = {
 }
 
 
+HEATSTROKE_SCENARIO = {
+    "disease": {
+        "name": "Heatstroke",
+        "required_supplies": [
+            "IV Fluids",
+            "Saline",
+            "Cooling Blankets",
+            "Electrolyte Solution",
+        ],
+    },
+    "facility_a": {
+        "inventory": {},
+        "inventory_status": "awaiting_live_inventory",
+    },
+    "facility_b": {
+        "inventory": {},
+        "inventory_status": "awaiting_live_inventory",
+    },
+    "forecast": {
+        "status": "awaiting_live_data",
+        "predicted_case_growth": None,
+    },
+    "recommendation": {
+        "status": "pending_reasoning",
+        "source_facility": None,
+        "destination_facility": None,
+        "transfer_quantity": None,
+        "estimated_arrival": None,
+    },
+}
+
+
 def seed_hospital_meta() -> None:
     """Write each hospital's metadata to a Redis hash and print it."""
     client = get_redis()
@@ -150,11 +188,19 @@ def seed_forecast() -> None:
     print(json.dumps(record, indent=2))
 
 
+def seed_scenarios() -> None:
+    """Store demo scenario profiles as JSON strings via Redis SET."""
+    client = get_redis()
+    client.set(scenario_key("heatstroke"), json.dumps(HEATSTROKE_SCENARIO))
+    print("Seeded scenario: Heatstroke")
+
+
 def main() -> None:
     seed_hospital_meta()
     seed_inventory()
     seed_surplus()
     seed_forecast()
+    seed_scenarios()
 
 
 if __name__ == "__main__":

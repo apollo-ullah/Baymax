@@ -27,6 +27,11 @@ def forecast_key(region: str) -> str:
     return f"forecast:{region}"
 
 
+def scenario_key(scenario_id: str) -> str:
+    """JSON string holding a high-level operational scenario profile."""
+    return f"scenario:{scenario_id}"
+
+
 # --- Streams (append-only event logs) ---
 
 # Stream of transfer requests/records between hospitals.
@@ -52,3 +57,9 @@ HISTORY_PREFIX = "history:usage"
 
 # Name of the vector index built over usage history records.
 HISTORY_INDEX = "history:usage:index"
+
+
+# --- Vision pipeline ---
+
+# Latest raw camera/vision inventory detection output (JSON string).
+VISION_LATEST_KEY = "vision:latest"
