@@ -282,17 +282,135 @@ function makeMockApi(): BaymaxApi {
 
 // ── live implementation (fails closed to mock) ─────────────────────────────
 
+/**
+ * NDJSON line shapes emitted by the /api/crisis route handler.
+ */
+interface NdjsonEvent {
+  type: "event";
+  event: PipelineEvent;
+}
+interface NdjsonResult {
+  type: "result";
+  result: CrisisResult;
+}
+interface NdjsonError {
+  type: "error";
+  message: string;
+}
+type NdjsonLine = NdjsonEvent | NdjsonResult | NdjsonError;
+
 function makeLiveApi(): BaymaxApi {
   const mock = makeMockApi();
-  // The live client calls Next route handlers (which proxy the backend).
-  // Until those endpoints exist, every method falls back to mock so the UI
-  // never breaks. Wire real fetches here when the backend is up.
+
   return {
     mode: "live",
-    getNetwork: () => mock.getNetwork(),
-    runCrisis: (p, cb, o) => mock.runCrisis(p, cb, o),
-    getForecast: (o) => mock.getForecast(o),
-    decide: (d) => mock.decide(d),
+
+    async getNetwork() {
+      try {
+        const res = await fetch("/api/network");
+        if (!res.ok) return mock.getNetwork();
+        return res.json();
+      } catch {
+        return mock.getNetwork();
+      }
+    },
+
+    async getForecast(opts) {
+      try {
+        const res = await fetch("/api/forecast", { signal: opts?.signal });
+        if (!res.ok) return mock.getForecast(opts);
+        return res.json();
+      } catch (err) {
+        if (err instanceof Error && err.name === "AbortError") throw err;
+        return mock.getForecast(opts);
+      }
+    },
+
+    async decide(decision) {
+      try {
+        const res = await fetch(
+          `/api/decide?decision=${encodeURIComponent(decision)}`
+        );
+        if (!res.ok) return mock.decide(decision);
+        const body = await res.json();
+        if (!body.ok) return mock.decide(decision);
+        return body as { ok: boolean; message: string };
+      } catch {
+        return mock.decide(decision);
+      }
+    },
+
+    async runCrisis(prompt, onEvent, opts) {
+      const signal = opts?.signal;
+
+      let res: Response;
+      try {
+        res = await fetch("/api/crisis", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt }),
+          signal,
+        });
+      } catch (err) {
+        if (err instanceof Error && err.name === "AbortError") throw err;
+        // Network error → fall back to mock.
+        return mock.runCrisis(prompt, onEvent, opts);
+      }
+
+      if (!res.ok || !res.body) {
+        // Route returned an error → fall back to mock.
+        return mock.runCrisis(prompt, onEvent, opts);
+      }
+
+      // Read the NDJSON stream line by line.
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      let result: CrisisResult | null = null;
+      let backendError = false;
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split("\n");
+          buf = lines.pop() ?? "";
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            let parsed: NdjsonLine;
+            try {
+              parsed = JSON.parse(trimmed) as NdjsonLine;
+            } catch {
+              continue;
+            }
+
+            if (parsed.type === "event") {
+              onEvent(parsed.event);
+            } else if (parsed.type === "result") {
+              result = parsed.result;
+            } else if (parsed.type === "error") {
+              backendError = true;
+            }
+          }
+        }
+      } catch (err) {
+        if (err instanceof Error && err.name === "AbortError") throw err;
+        // Stream read error → fall back to mock.
+        backendError = true;
+      } finally {
+        reader.releaseLock();
+      }
+
+      if (backendError || result === null) {
+        return mock.runCrisis(prompt, onEvent, opts);
+      }
+
+      return result;
+    },
   };
 }
 

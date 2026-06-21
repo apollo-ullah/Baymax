@@ -8,6 +8,7 @@ import { PromptConsole } from "@/components/app/PromptConsole";
 import { PipelinePanel } from "@/components/app/PipelinePanel";
 import { ApprovalActions } from "@/components/app/ApprovalActions";
 import { ForecastPanel } from "@/components/app/ForecastPanel";
+import { CameraCard } from "@/components/app/CameraCard";
 
 type Decision = "approve" | "order" | "reject";
 
@@ -109,6 +110,8 @@ export function Dashboard() {
           </div>
 
           <ForecastPanel />
+
+          <CameraCard />
         </div>
       </div>
     </div>
