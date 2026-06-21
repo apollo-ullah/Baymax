@@ -286,3 +286,33 @@ Regression (must stay green): `./.venv/bin/python wave2_e2e_check.py`; `BAYMAX_S
 - **Spec coverage:** live feeds (Task 3 `/stream`), scan (Task 3/4), one-click negotiate (Task 4 trigger + Task 6 poller), live narration (Task 1 bus + Task 5 tap + Task 4 SSE), simulated settlement (existing `settle_transfer` stub via reply_to=None — verified, no task needed), MacBook-A-as-server topology (runbook). All covered.
 - **No placeholders:** core edits given verbatim; new files specified with the exact Redis schema + signatures.
 - **Type consistency:** `publish_narration(payload: dict)` ↔ `_NARRATION_SINK(payload)` ↔ SSE `json.dumps(msg)`; `push_trigger/pop_trigger` dict shape `{item,requester,quantity}` ↔ poller reads the same keys.
+
+---
+
+## Addendum (2026-06-20): surface the Wave 3 approval gate on the dashboard
+
+Per the spec revision, a dashboard "Scan & Negotiate" run **halts at the
+`AWAITING_APPROVAL` gate** (rather than auto-approving) and the operator resolves
+it with one in-page click; an unattended run auto-approves after a short timeout.
+Implemented as:
+
+- **`baymax_agents.py`:** `start_negotiation(..., source="chat")` stores
+  `neg["source"]`. `_request_admin_decision` auto-resolves only when
+  `reply_to is None AND source != "dashboard"` (Bureau/headless) — dashboard runs
+  fall through to the gate-arming path. The arming path uses
+  `DASHBOARD_APPROVAL_TIMEOUT_S` (env `BAYMAX_DASHBOARD_APPROVAL_TIMEOUT`, 45s) for
+  dashboard runs. The `offer_timeout` watchdog **auto-approves** an expired
+  dashboard gate (vs. the chat path's auto-fail) via `resume_after_admin_decision`.
+- **`dashboard_bus.py`:** `DECISION_LIST = "baymax:decision"` + `push_decision`/`pop_decision`.
+- **`run_front.py`:** the trigger poller passes `source="dashboard"`; a second
+  `on_interval` (`_poll_dashboard_decision`) pops `baymax:decision` and calls
+  `resume_after_admin_decision(ctx, req_id, decision)` (falls back to the single
+  open dashboard gate if `req_id` is absent).
+- **`scan_dashboard.py`:** `POST /decide {req_id, decision}` → `push_decision`; the
+  page shows Approve / Order externally / Reject when an `awaiting_approval` event
+  arrives (capturing `req_id` from the narration), hiding them on a `final` event.
+
+**Verification:** `wave4_dashboard_e2e_check.py` (new harness) drives the whole
+dashboard path offline — trigger `source="dashboard"` → gate surfaces → auto-click
+approve → stub-settle → `CONFIRMED` — and asserts PASS. `wave2`/`wave3` (chat +
+order paths) remain green, confirming the chat/Bureau behavior is unchanged.

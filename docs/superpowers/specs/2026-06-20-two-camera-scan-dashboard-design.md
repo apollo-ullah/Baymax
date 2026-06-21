@@ -1,8 +1,18 @@
 # Two-Camera Live Scan + Dashboard + One-Click Negotiate
 
 **Date:** 2026-06-20
-**Status:** Approved (design) — pending implementation plan
+**Status:** Approved (design), revised 2026-06-20 — pending implementation plan
 **Scope:** Minimum pitchable product (MPP) for the hackathon demo. Not final.
+
+> **Revision (2026-06-20):** The dashboard now **surfaces the Wave 3
+> admin-approval gate** rather than auto-approving. A "Scan & Negotiate" run
+> halts at `AWAITING_APPROVAL`; the operator clicks **Approve / Order externally
+> / Reject** in the page, the decision rides a second Redis list
+> (`baymax:decision`) back to the FRONT agent, and the negotiation resumes via the
+> existing `resume_after_admin_decision`. A timeout fallback auto-approves so an
+> unclicked pitch can't stall. This makes one screen demo live scan +
+> human-in-the-loop + one-click external order. Affected sections: §2, §4.3, §4.4,
+> §5, §9, §10. (The original design auto-approved dashboard runs — superseded.)
 
 ## 1. Summary
 
@@ -16,7 +26,9 @@ one per MacBook, each owning one hospital's shelf. Add a **web dashboard** that:
    already reads.
 3. On **"Scan & Negotiate"**, does the scan and then kicks the FRONT agent to
    run a full supply negotiation, streaming each milestone back onto the
-   dashboard live.
+   dashboard live — **halting at an in-page Approve / Order externally / Reject
+   gate** that the operator resolves with one click (the Wave 3 human-in-the-loop
+   surfaced on the dashboard).
 
 The negotiation core, ranking, Redis inventory schema, and the existing ASI:One
 chat + real-FET-payment path are **unchanged**.
@@ -31,6 +43,10 @@ chat + real-FET-payment path are **unchanged**.
 - Works over a hotspot / shared LAN (hub-and-spoke; MacBooks talk only to the
   server, never to each other).
 - Demo-safe: a flaky webcam or missing API key cannot block the pitch.
+- The dashboard **surfaces the Wave 3 human-in-the-loop gate**: a "Scan &
+  Negotiate" run halts at `AWAITING_APPROVAL` with in-page Approve / Order
+  externally / Reject controls, resolved with one click — with an auto-approve
+  timeout fallback so an unclicked pitch can't stall.
 
 **Non-goals (out of scope for the MPP)**
 - Background polling / continuous auto-scan (explicitly dropped — on-demand only).
@@ -135,7 +151,8 @@ Parser pulls the integer after `COUNT:`; on any parse failure it falls back to
 | `GET /` | Serves the single HTML page (live feeds + buttons + result cards + negotiation feed). |
 | `POST /scan` | `asyncio.gather` POST `/scan` to worker A (localhost) + worker B (hotspot IP); return combined counts. |
 | `POST /scan-and-negotiate` | Run `/scan`, then `RPUSH` a trigger `{item, requester, quantity}` onto Redis list `baymax:trigger`; return an ack with the item/quantity. |
-| `GET /events` | **SSE** (`text/event-stream`) tailing Redis channel `baymax:narration`; pushes each negotiation milestone to the browser live. |
+| `POST /decision` | Body `{req_id, decision}`, `decision ∈ {approve, order, reject}` → `RPUSH` it onto Redis list `baymax:decision` for the FRONT poller to resume the halted negotiation. Returns an ack. Backs the in-page gate buttons. |
+| `GET /events` | **SSE** (`text/event-stream`) tailing Redis channel `baymax:narration`; pushes each milestone `{req_id, state, text}` to the browser. The page shows the gate buttons when it sees `state == awaiting_approval` (capturing that event's `req_id`) and hides them on a terminal state (`confirmed` / `failed`). |
 | `GET /health` | Reports reachability of both workers + Redis. |
 
 **Config (env):** `WORKER_A_URL` (default `http://localhost:8765`),
@@ -150,6 +167,11 @@ Parser pulls the integer after `COUNT:`; on any parse failure it falls back to
 - Buttons: **Scan Hospitals** (`POST /scan`) and **Scan & Negotiate**
   (`POST /scan-and-negotiate`).
 - A negotiation feed `<ul>` appended to from an `EventSource('/events')`.
+- A **gate row** (Approve / Order externally / Reject), hidden by default. The
+  `EventSource` handler reveals it on the `awaiting_approval` event — stashing
+  that event's `req_id` — and each button `POST`s `/decision`
+  `{req_id, decision}` then hides the row. A terminal milestone (`confirmed` /
+  `failed`) also hides it.
 
 ```
 ┌──────────────────────────  BAYMAX · Supply Operations  ──────────────────────────┐
@@ -162,10 +184,16 @@ Parser pulls the integer after `COUNT:`; on any parse failure it falls back to
 │  ─ Negotiation feed ───────────────────────────────────────────────────────────── │
 │   • requesting … broadcasting need for 150 saline                                  │
 │   • collecting_offers … Hospital B offers 80, Hospital C offers 70                 │
+│   • evaluating … nearest-first plan: 80 from B + 70 from C                         │
+│   • awaiting_approval … admin decision required                                    │
+│        [ ✓ Approve ]   [ 🛒 Order externally ]   [ ✗ Reject ]   ← operator clicks  │
 │   • proposing … 80 from B + 70 from C                                              │
 │   • settling … ✅ confirmed (simulated FET ref tx_…)                                │
 └────────────────────────────────────────────────────────────────────────────────────┘
 ```
+
+(The gate row is hidden until the `awaiting_approval` milestone arrives and
+hidden again once the operator clicks or the run reaches a terminal state.)
 
 ### 4.4 FRONT agent additions (minimal, additive, flag-gated)
 
@@ -173,29 +201,56 @@ All changes are additive and off by default, so the ASI:One path and existing
 offline harnesses (`wave2_e2e_check.py`, `front_agent.py --selftest`, etc.) are
 untouched.
 
-1. **Redis trigger poller** on the FRONT agent: an `@agent.on_interval(period≈1s)`
-   handler (added in `run_front.py`) that `LPOP`s `baymax:trigger`; on a present
-   trigger `{item, requester?, quantity?}` it calls `start_negotiation(ctx, item,
-   requester=…, quantity_needed=…, reply_to=None, source="dashboard")`. Runs in
-   the agent's own event loop with a real `ctx`, so no extra port and no
-   REST-alongside-mailbox dependency. (A uAgent REST `/negotiate` on a distinct
-   port is an equivalent alternative if polling latency ever matters; ~1s is fine
-   for the demo.) A short in-handler guard ignores a second trigger while one
-   dashboard-sourced negotiation is still running.
+1. **Redis trigger + decision poller** on the FRONT agent: an
+   `@agent.on_interval(period≈1s)` handler (added in `run_front.py`) that drains
+   two Redis lists each tick:
+   - `LPOP baymax:trigger` → on a trigger `{item, requester?, quantity?}` it calls
+     `start_negotiation(ctx, item, requester=…, quantity_needed=…, reply_to=None,
+     source="dashboard")`. A short in-handler guard ignores a second trigger while
+     one dashboard-sourced negotiation is still running.
+   - `LPOP baymax:decision` → on a decision `{req_id, decision}` (decision ∈
+     `approve`/`order`/`reject`) it calls
+     `resume_after_admin_decision(ctx, req_id, decision)`. That function is already
+     idempotent and a no-op unless the named negotiation is in `AWAITING_APPROVAL`,
+     so a stray or duplicate decision is safely ignored.
+
+   Both run in the agent's own event loop with a real `ctx`, so no extra port and
+   no REST-alongside-mailbox dependency (~1s latency is fine for the demo).
 
 2. **Narration tap** in the negotiation core's milestone emitter
    (`baymax_agents.py`). When `BAYMAX_NARRATE_REDIS=1`, each milestone also
-   `publish`es `{req_id, state, text}` to Redis channel `baymax:narration`. When
-   a negotiation's `reply_to is None`, the emitter **skips the chat `ctx.send`**
-   and taps Redis only. Default (env unset, `reply_to` set) → behaves exactly as
-   today.
+   `publish`es `{req_id, state, text}` to Redis channel `baymax:narration` —
+   **independent of the chat `SPARSE_NARRATION` gating**, so the dashboard always
+   receives every state (including `awaiting_approval` and the terminal states the
+   gate buttons depend on). When a negotiation's `reply_to is None`, the emitter
+   **skips the chat `ctx.send`** and taps Redis only. Default (env unset,
+   `reply_to` set) → behaves exactly as today.
 
-3. **Settlement branch.** The negotiation state records `source`
-   ("chat" default | "dashboard"). `settle_transfer` settles **dashboard**-
-   sourced deals with the existing stub reference (simulated) and narrates
-   "confirmed (simulated)", instead of firing `settle_via_payment_protocol`
-   (which needs a wallet `reply_to`). Chat-sourced deals are unchanged → real
-   FET via ASI:One.
+3. **Dashboard-sourced negotiations halt at the approval gate.** The negotiation
+   state records `source` ("chat" default | "dashboard"). Today's headless
+   auto-approve in `_request_admin_decision` keys on `reply_to is None`; it is
+   **re-keyed on `source`** so only the headless **Bureau** demo (source "chat",
+   `reply_to=None`) auto-resolves. A **dashboard**-sourced run (also
+   `reply_to=None`) instead arms the watchdog and emits `AWAITING_APPROVAL` like
+   the chat path — the milestone the dashboard turns into the gate buttons. The
+   operator's click rides `baymax:decision` back to `resume_after_admin_decision`
+   (item 1), which runs the existing `approve` (→ `_begin_trade`) / `order` (→
+   `_order_path`) / `reject` (→ cancel) branches.
+
+   **Timeout fallback = auto-approve (demo safety).** The approval watchdog
+   (`offer_timeout` `on_interval`) currently *fails* a timed-out gate. For a
+   **dashboard**-sourced negotiation it instead calls
+   `resume_after_admin_decision(ctx, req_id, "approve")` on expiry, so an unclicked
+   pitch auto-approves rather than stalling/failing. Chat-sourced gates still fail
+   on timeout (unchanged). `BAYMAX_APPROVAL_TIMEOUT` governs both.
+
+4. **Settlement branch.** `settle_transfer` settles **dashboard**-sourced deals
+   with the existing stub reference (simulated) and narrates "confirmed
+   (simulated)", instead of firing `settle_via_payment_protocol` (which needs a
+   wallet `reply_to`). The external-**order** path is likewise simulated for a
+   dashboard run: the order settlement must return a stub reference when
+   `reply_to is None` (mirroring `settle_transfer`'s no-wallet stub branch).
+   Chat-sourced deals are unchanged → real FET via ASI:One.
 
 ## 5. Data flow
 
@@ -214,8 +269,22 @@ Operator → [Scan & Negotiate] → dashboard POST /scan-and-negotiate
   → dashboard RPUSH baymax:trigger {item, requester, quantity}
       → FRONT on_interval LPOP baymax:trigger
           → start_negotiation(reply_to=None, source="dashboard")
-              → milestones published to Redis baymax:narration (and stub-settled)
-  → browser EventSource('/events') tails baymax:narration → live feed updates
+              → requesting … collecting_offers … evaluating
+              → AWAITING_APPROVAL  (published to baymax:narration)
+  → browser EventSource('/events') sees state=awaiting_approval → shows gate buttons
+
+Operator → [Approve | Order externally | Reject] → dashboard POST /decision {req_id, decision}
+  → dashboard RPUSH baymax:decision {req_id, decision}
+      → FRONT on_interval LPOP baymax:decision
+          → resume_after_admin_decision(ctx, req_id, decision)
+              → approve → proposing … settling (stub/simulated) … confirmed
+                 order  → ordering supplier (mock) … settling (simulated) … confirmed
+                 reject → failed (cancelled)
+              → each milestone published to baymax:narration
+  → browser EventSource('/events') tails baymax:narration → feed updates, buttons hide
+
+  (If no decision arrives within BAYMAX_APPROVAL_TIMEOUT, the watchdog
+   auto-approves the dashboard run so the demo never stalls.)
 ```
 
 The negotiation reads the **fresh** counts because the workers wrote Redis
@@ -254,6 +323,12 @@ path settles **simulated** (stub ref, labeled "simulated"); the **real signed
 FET tx remains the unchanged ASI:One flow** (type the intent in ASI:One, approve
 in the wallet). Two clean, reliable demos rather than one fragile coupled one.
 
+This holds for **all three** dashboard gate decisions: `approve` (inter-facility
+trade) and `order` (external supplier) both settle with a simulated stub
+reference, and `reject` cancels. The gate adds a human-in-the-loop *decision* to
+the dashboard; it does not change the settlement constraint — only the ASI:One
+chat path produces a real signed FET tx.
+
 ## 8. New dependencies
 
 Add to `adyan-agent-communication-layer/requirements.txt`: `fastapi`,
@@ -267,9 +342,9 @@ Add to `adyan-agent-communication-layer/requirements.txt`: `fastapi`,
 | :-- | :-- | :-- |
 | `camera_worker.py` | new | Per-MacBook camera HTTP server (`/stream`, `/scan`, `/health`). |
 | `vision_count.py` | new | Self-contained single-shelf Claude Vision count + parse. |
-| `scan_dashboard.py` | new | Dashboard server + embedded HTML page + SSE. |
-| `run_front.py` | changed | Add Redis trigger poller (`on_interval` → `start_negotiation`); enable Redis narration tap. |
-| `baymax_agents.py` | changed | Narration tap (Redis publish; tolerate `reply_to=None`); `source` flag + simulated settlement branch. |
+| `scan_dashboard.py` | new | Dashboard server + embedded HTML page + SSE; `/scan`, `/scan-and-negotiate`, `/decision`, `/events`, `/health`. |
+| `run_front.py` | changed | Add the `on_interval` poller draining `baymax:trigger` (→ `start_negotiation`) **and** `baymax:decision` (→ `resume_after_admin_decision`); enable Redis narration tap. |
+| `baymax_agents.py` | changed | Narration tap (Redis publish, SPARSE-independent; tolerate `reply_to=None`); `source` flag; re-key the headless auto-approve onto `source` so dashboard runs halt at `AWAITING_APPROVAL`; watchdog auto-approves a timed-out dashboard gate; simulated settlement branch (trade + order). |
 | `requirements.txt` | changed | Add `fastapi`, `uvicorn[standard]`. |
 
 ## 10. Testing / verification
@@ -281,9 +356,18 @@ In the project's self-exiting-harness style (no pytest):
   Redis `hospital:hospital_a:inventory` / `:surplus` updated; `curl /health`.
 - `scan_dashboard.py`: with both workers in `--mock-count` mode, `POST /scan`
   returns both counts; `POST /scan-and-negotiate` produces `baymax:narration`
-  milestones and a simulated confirmation visible on `/events`.
-- Regression: `wave2_e2e_check.py` and `BAYMAX_SELFTEST=1 front_agent.py` still
-  pass unchanged (narration tap + `source` are off/"chat" by default).
+  milestones up to `awaiting_approval` visible on `/events`.
+- **Gate round-trip** (offline, the headline new path): a self-exiting harness
+  (e.g. `wave4_dashboard_e2e_check.py`) drives `start_negotiation(source=
+  "dashboard", reply_to=None)` in a Bureau, asserts it **halts at
+  `AWAITING_APPROVAL`** (does not auto-approve), then feeds each of
+  `approve` / `order` / `reject` through `resume_after_admin_decision` and asserts
+  the corresponding terminal state with a **simulated** settlement reference;
+  plus a timeout case asserting the watchdog **auto-approves** a dashboard gate.
+- Regression: `wave2_e2e_check.py`, `wave3_order_e2e_check.py`, and
+  `BAYMAX_SELFTEST=1 front_agent.py` still pass unchanged (narration tap +
+  `source` are off/"chat" by default; the headless Bureau demo still auto-resolves
+  because its `source` is "chat").
 
 ## 11. Risks & mitigations
 
@@ -294,6 +378,13 @@ In the project's self-exiting-harness style (no pytest):
   fallback keeps the demo deterministic.
 - **Touching the negotiation core** → all additions flag-gated / default-off;
   regression harnesses must still pass before merge.
+- **Re-keying the headless auto-approve from `reply_to` to `source` could break
+  the Bureau demo** (which also has `reply_to=None`) → the headless Bureau demo
+  keeps `source="chat"`, so it still auto-resolves; `wave3_order_e2e_check.py` and
+  the `baymax_agents.py` Bureau demo are part of the required regression set.
+- **Gate stalls the pitch if nobody clicks** → the watchdog auto-approves a
+  **dashboard**-sourced gate on `BAYMAX_APPROVAL_TIMEOUT` expiry (chat gates still
+  fail on timeout, unchanged).
 - **Chat-relay 429s** unaffected — dashboard narration uses Redis, not the
   ASI:One relay.
 ```

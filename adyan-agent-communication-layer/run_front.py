@@ -120,6 +120,55 @@ def build_agent():
     # the purchase via the same Payment Protocol (FET) to a supplier wallet.
     sp.register_order_settlement_hook(settle_order_via_payment_protocol)
 
+    # (6) Dashboard bus: publish every milestone for the scan dashboard, and poll
+    # for dashboard-triggered ("Scan & Negotiate") negotiations. reply_to=None ->
+    # the core auto-approves the trade and stub-settles (simulated); the real FET
+    # path stays the ASI:One chat flow (reply_to=<chat sender>).
+    import dashboard_bus
+
+    sp.register_narration_sink(dashboard_bus.publish_narration)
+
+    @agent.on_interval(period=1.0)
+    async def _poll_dashboard_trigger(ctx):
+        # One dashboard negotiation at a time; leave the trigger queued if busy.
+        for neg in sp.NEGOTIATIONS.values():
+            if neg.get("reply_to") is None and not neg.get("done"):
+                return
+        trig = dashboard_bus.pop_trigger()
+        if not trig:
+            return
+        item = trig.get("item") or os.getenv("BAYMAX_ITEM", "saline")
+        requester = trig.get("requester") or "Hospital A"
+        qty = trig.get("quantity")
+        ctx.logger.info(
+            f"dashboard trigger -> start_negotiation({item!r}, "
+            f"requester={requester!r}, qty={qty})")
+        await sp.start_negotiation(
+            ctx, item, requester=requester, quantity_needed=qty,
+            reply_to=None, source="dashboard")
+
+    @agent.on_interval(period=0.5)
+    async def _poll_dashboard_decision(ctx):
+        # The dashboard's Approve / Order externally / Reject buttons RPUSH onto
+        # baymax:decision; resume the halted (AWAITING_APPROVAL) negotiation.
+        dec = dashboard_bus.pop_decision()
+        if not dec:
+            return
+        decision = dec.get("decision")
+        if decision not in ("approve", "order", "reject"):
+            return
+        req_id = dec.get("req_id")
+        if not req_id:  # robustness: resolve the single open dashboard gate
+            req_id = next(
+                (rid for rid, n in sp.NEGOTIATIONS.items()
+                 if n.get("source") == "dashboard" and not n.get("done")
+                 and n.get("state") == sp.NegotiationState.AWAITING_APPROVAL),
+                None)
+        if not req_id:
+            return
+        ctx.logger.info(f"dashboard decision: {req_id} -> {decision}")
+        await sp.resume_after_admin_decision(ctx, req_id, decision)
+
     return agent, wallet_addr
 
 

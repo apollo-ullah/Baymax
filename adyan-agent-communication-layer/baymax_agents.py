@@ -106,12 +106,28 @@ MAX_REPLAN_ATTEMPTS = int(os.getenv("BAYMAX_MAX_REPLANS", "3"))
 # Seconds to wait for the chat admin's approve/order/reject decision before the
 # watchdog auto-fails the negotiation (prevents AWAITING_APPROVAL zombies).
 APPROVAL_TIMEOUT_S = float(os.getenv("BAYMAX_APPROVAL_TIMEOUT", "300"))
+# Dashboard "Scan & Negotiate" runs surface the approval gate in-page; if the
+# operator doesn't click within this window, the watchdog auto-approves the trade
+# so an unattended pitch can't stall (chat runs still use APPROVAL_TIMEOUT_S).
+DASHBOARD_APPROVAL_TIMEOUT_S = float(os.getenv("BAYMAX_DASHBOARD_APPROVAL_TIMEOUT", "45"))
 # For the one-shot Bureau demo/test: exit the process once a negotiation ends.
 EXIT_WHEN_DONE = os.getenv("BAYMAX_EXIT_WHEN_DONE", "").lower() in ("1", "true", "yes")
 
 # In-process negotiation state, keyed by request_id. (Bureau runs one process;
 # a multi-process deployment would move this into ctx.storage / Redis.)
 NEGOTIATIONS: dict[str, dict] = {}
+
+
+# Narration sink (dashboard bus). When wired (run_front), every milestone is also
+# handed here so the scan dashboard can show the negotiation live. Off by default
+# -> the ASI:One path and the offline harnesses are unchanged.
+_NARRATION_SINK = None
+
+
+def register_narration_sink(fn) -> None:
+    """Register a sink fn(payload: dict) -> None (sync) called on each milestone."""
+    global _NARRATION_SINK
+    _NARRATION_SINK = fn
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +146,12 @@ async def _step(ctx: Context, neg: dict, state: NegotiationState, detail: str,
     if reply_to and should_narrate:
         await ctx.send(reply_to, create_text_chat(f"**{state.value}** — {detail}",
                                                   end_session=final))
+    if _NARRATION_SINK is not None and (narrate or final):
+        try:
+            _NARRATION_SINK({"req_id": neg.get("req_id"), "state": state.value,
+                             "detail": detail, "final": final})
+        except Exception:
+            pass  # a narration sink must never break the negotiation
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +160,7 @@ async def _step(ctx: Context, neg: dict, state: NegotiationState, detail: str,
 
 async def start_negotiation(ctx: Context, item: str, *, requester: str = REQUESTER,
                             quantity_needed: int | None = None,
-                            reply_to: str | None = None) -> str:
+                            reply_to: str | None = None, source: str = "chat") -> str:
     """Detect the shortfall and broadcast a SupplyRequest. Returns request_id.
 
     FRONT calls this from its chat handler with reply_to=<sender> so the whole
@@ -151,6 +173,7 @@ async def start_negotiation(ctx: Context, item: str, *, requester: str = REQUEST
     need = quantity_needed if quantity_needed is not None else inv.shortfall
     req_id = uuid4().hex[:8]
     neg = NEGOTIATIONS[req_id] = {
+        "req_id": req_id, "source": source,
         "item": item, "requester": requester, "need": need,
         "offers": {}, "expected": set(SURPLUS_ADDRESSES.values()),
         "plan": None, "pending": set(), "accepts": set(), "rejects": set(),
@@ -256,8 +279,10 @@ async def _request_admin_decision(ctx: Context, req_id: str):
     neg = NEGOTIATIONS[req_id]
     # Headless/Bureau demo: no chat admin can reply (reply_to is None) — auto-resolve
     # so the documented `python baymax_agents.py` demo still completes instead of
-    # stalling at the gate until the watchdog fails it.
-    if neg.get("reply_to") is None:
+    # stalling at the gate until the watchdog fails it. Dashboard runs (reply_to is
+    # None but source=="dashboard") DO surface the gate — the operator approves /
+    # orders / rejects in the page — so they fall through to the arming path below.
+    if neg.get("reply_to") is None and neg.get("source") != "dashboard":
         plan = neg.get("plan")
         if plan and plan.allocations:
             await _begin_trade(ctx, req_id)
@@ -268,7 +293,9 @@ async def _request_admin_decision(ctx: Context, req_id: str):
             neg["done"] = True
             _maybe_exit(ctx)
         return
-    neg["approval_deadline"] = time.monotonic() + APPROVAL_TIMEOUT_S
+    timeout_s = (DASHBOARD_APPROVAL_TIMEOUT_S if neg.get("source") == "dashboard"
+                 else APPROVAL_TIMEOUT_S)
+    neg["approval_deadline"] = time.monotonic() + timeout_s
     neg["decided"] = False
     plan = neg.get("plan")
     if plan and plan.allocations:
@@ -400,6 +427,7 @@ async def start_order(ctx: Context, item: str, quantity: int | None, *,
             os.getenv("BAYMAX_DEFAULT_ORDER_QTY", "100"))
     req_id = uuid4().hex[:8]
     NEGOTIATIONS[req_id] = {
+        "req_id": req_id,
         "item": item, "requester": requester, "need": int(quantity),
         "offers": {}, "expected": set(), "plan": None, "pending": set(),
         "accepts": set(), "rejects": set(), "deadline": time.monotonic(),
@@ -824,12 +852,20 @@ def attach_front_handlers(front):
                 await _evaluate(ctx, req_id)
             elif (state == NegotiationState.AWAITING_APPROVAL
                   and nowt >= neg.get("approval_deadline", float("inf"))):
-                await _step(ctx, neg, NegotiationState.FAILED,
-                            f"No admin decision within {APPROVAL_TIMEOUT_S:.0f}s — "
-                            f"timed out. No transfer or order placed.",
-                            narrate=True, final=True)
-                neg["done"] = True
-                _maybe_exit(ctx)
+                if neg.get("source") == "dashboard" and (
+                        neg.get("plan") and neg["plan"].allocations):
+                    await _step(ctx, neg, NegotiationState.AWAITING_APPROVAL,
+                                f"No decision within {DASHBOARD_APPROVAL_TIMEOUT_S:.0f}s — "
+                                f"auto-approving the inter-facility trade.", narrate=True)
+                    await resume_after_admin_decision(ctx, req_id, "approve")
+                else:
+                    tmo = (DASHBOARD_APPROVAL_TIMEOUT_S
+                           if neg.get("source") == "dashboard" else APPROVAL_TIMEOUT_S)
+                    await _step(ctx, neg, NegotiationState.FAILED,
+                                f"No admin decision within {tmo:.0f}s — timed out. "
+                                f"No transfer or order placed.", narrate=True, final=True)
+                    neg["done"] = True
+                    _maybe_exit(ctx)
 
 
 # ---------------------------------------------------------------------------
