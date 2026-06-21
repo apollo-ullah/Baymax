@@ -114,6 +114,26 @@ class RankedPlan:
     rationale: str = ""
 
 
+@dataclass
+class SupplierOrder:
+    """An external-supplier purchase order. Returned by order_from_supplier().
+
+    For the mock + Browserbase 'prepared' flow this represents a cart-review /
+    prepared order (we do NOT pay the vendor in crypto; settlement is a separate
+    FET tx). total_price/currency are the vendor's quote (display only); the FET
+    charge is derived from quantity by the settlement layer."""
+
+    item: str
+    quantity: int
+    vendor: str
+    unit_price: Optional[float] = None
+    total_price: Optional[float] = None
+    currency: str = "USD"
+    confirmation_ref: str = ""
+    live_view_url: Optional[str] = None   # Browserbase session/screenshot artifact
+    status: str = "prepared"              # prepared | confirmed | failed
+
+
 # ---------------------------------------------------------------------------
 # Mock inventory (Redis seam — Workstream C replaces with real Redis reads)
 # ---------------------------------------------------------------------------
@@ -319,3 +339,83 @@ def rank_offers(need: SupplyNeed, offers: List[OfferView]) -> RankedPlan:
         fully_covered=fully_covered,
         rationale=rationale,
     )
+
+
+# ---------------------------------------------------------------------------
+# SEAM 3 — external supplier order (Browserbase, Wave 3). Mirrors get_inventory:
+# delegates to supplier_order.py when BAYMAX_BROWSERBASE is on, else a
+# deterministic mock; fail-closed to the mock on ANY error so offline harnesses
+# never need Browserbase/keys.
+# ---------------------------------------------------------------------------
+
+# item -> (vendor, unit price USD). Deterministic so the demo + tests are stable.
+_MOCK_VENDORS = {
+    "IV fluids": ("MedSupply Direct", 12.50),
+    "saline": ("MedSupply Direct", 3.20),
+    "sutures": ("SurgiSupply Co", 8.75),
+}
+
+
+def _mock_order_from_supplier(item: str, quantity: int, *, hospital: str) -> SupplierOrder:
+    vendor, unit = _MOCK_VENDORS.get(item, ("Generic Medical Supplier", 10.0))
+    qty = max(int(quantity), 1)
+    total = round(unit * qty, 2)
+    # Deterministic, human-readable PO ref (no hash() — that is per-process random).
+    ref = f"MOCK-PO-{hospital.split()[-1]}-{item.replace(' ', '')[:4].upper()}-{qty}"
+    return SupplierOrder(
+        item=item, quantity=qty, vendor=vendor, unit_price=unit,
+        total_price=total, currency="USD", confirmation_ref=ref,
+        live_view_url=None, status="prepared",
+    )
+
+
+def order_from_supplier(item: str, quantity: int, *, hospital: str) -> SupplierOrder:
+    """Place (prepare) an external-supplier order for `quantity` of `item`.
+
+    BAYMAX_BROWSERBASE=1 -> drive a real vendor site via supplier_order.py
+    (Stagehand/Playwright over Browserbase). On ANY failure (missing lib, no key,
+    anti-bot, timeout) fall back to the deterministic mock. This is a SYNC
+    function: callers in async handlers invoke it via asyncio.to_thread()."""
+    import logging
+
+    import supplier_order  # lazy: keeps Browserbase/playwright optional
+
+    if supplier_order.browserbase_enabled():
+        try:
+            o = supplier_order.browserbase_order(item, quantity, hospital=hospital)
+            logging.getLogger("baymax.order").info(
+                "[order] backend=browserbase %s x%s vendor=%s total=%s ref=%s",
+                item, quantity, o.vendor, o.total_price, o.confirmation_ref,
+            )
+            return o
+        except Exception as exc:  # noqa: BLE001 — fail-closed to the mock
+            logging.getLogger("baymax.order").warning(
+                "[order] backend=browserbase FAILED for %s x%s (%s) -> mock fallback",
+                item, quantity, exc,
+            )
+    return _mock_order_from_supplier(item, quantity, hospital=hospital)
+
+
+# ---------------------------------------------------------------------------
+# SEAM 4 — per-facility admin confirmation (Wave 3 hybrid HITL). The surplus
+# facility's admin confirms releasing stock before a TransferAccept. Default:
+# auto-approve + log a notification ("each agent tied to an admin"). The reserved
+# BAYMAX_REQUIRE_FACILITY_APPROVAL flag denies (fail-closed) until a real,
+# non-blocking deferred-approval channel is built — it must NOT block the
+# on_proposal event-loop handler.
+# ---------------------------------------------------------------------------
+
+def approve_release(facility: str, item: str, qty: int) -> bool:
+    import logging
+    import os
+
+    require = os.getenv("BAYMAX_REQUIRE_FACILITY_APPROVAL", "").strip().lower() in (
+        "1", "true", "yes",
+    )
+    logging.getLogger("baymax.facility").info(
+        "[facility-admin] %s: release %s %s -> %s",
+        facility, qty, item,
+        "REQUIRES APPROVAL (reserved gate: denying until channel exists)"
+        if require else "auto-approved + notified",
+    )
+    return not require
