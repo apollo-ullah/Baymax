@@ -26,6 +26,15 @@ There is **no test runner, linter, or build step.** The verification harnesses b
 | Offline end-to-end incl. settlement (chat→negotiate→settle→pay), no ASI:One/wallet | `./.venv/bin/python wave2_e2e_check.py` |
 | Payment-protocol handshake in isolation (2 agents, fake tx) | `PAYMENT_VERIFY_ONCHAIN=false ./.venv/bin/python two_agent_payment_spike.py` |
 | Re-derive agent addresses from seeds | `./.venv/bin/python -c "import agent_base; print(*(f'{f}: {agent_base.address_for(f)}' for f in ('Hospital A','Hospital B','Hospital C')), sep=chr(10))"` |
+| Negotiation against **live Redis** inventory (split sourced from `tracks/redis`) | `STOCKPILE_REDIS=1 STOCKPILE_ITEM="IV fluids" STOCKPILE_NEED=200 STOCKPILE_EXIT_WHEN_DONE=1 ./.venv/bin/python stockpile_agents.py` |
+
+**Live Redis bring-up** (needed once before the Redis-backed row above; `redis` + `python-dotenv` must be in `.venv`):
+
+```bash
+docker compose -f ../tracks/redis/docker-compose.redis.yml up -d        # redis-stack on :6379
+(cd ../tracks/redis/src && REDIS_URL=redis://localhost:6379 \
+   ../../../adyan-agent-communication-layer/.venv/bin/python seed_demo_data.py)   # seed hospitals/inventory/surplus/forecast
+```
 
 **Live ASI:One / Agentverse (Mailbox mode):** run each agent in its own terminal (order does not matter), then do the one-time browser Mailbox connect from each agent's Inspector URL (see `README.md` and `DELIVERABLES.md`):
 
@@ -54,7 +63,7 @@ shortfall_detected → requesting → collecting_offers → evaluating
 ```
 
 Two layers deliberately sit behind **stubbed seams** in `interfaces.py`, owned by other workstreams and shipping as deterministic mocks. **The function signatures are the contract:**
-- `get_inventory(hospital, item) -> InventoryState` — Redis seam. Mock = hardcoded scenarios (the IV-fluids/saline/sutures cases above are encoded here).
+- `get_inventory(hospital, item) -> InventoryState` — Redis seam, **now live**. With `STOCKPILE_REDIS=1` it delegates to `redis_inventory.py`, which reads the teammates' Redis (`tracks/redis`, keyed `hospital_a`/`"IV Fluids"` — `redis_inventory.py` maps the display names + canonicalises items) and derives `safety_threshold = qty − surplus` so `spare_capacity` equals the Redis surplus. On ANY failure (Redis down, lib missing, unknown hospital) it falls back to the hardcoded mock below — fail-closed, never hangs (FR1). Default (no env) = mock, so the offline harnesses need no Redis. `distance_between` likewise uses Redis `meta` lat/lng in Redis mode. The mock still encodes the IV-fluids/saline/sutures scenarios; note the seeded Redis has no `sutures`, so the no-offer scenario is mock-only.
 - `rank_offers(need, offers) -> RankedPlan` — Claude/ranking seam. Mock = nearest-first greedy allocator that produces the canonical 150+50 split. `interfaces.py` has **no uagents dependency** by design; the agent layer adapts between its plain dataclasses and `protocol.py` wire models.
 
 The settlement step is also a seam: `stockpile_agents.settle_transfer()` delegates to a hook registered via `register_settlement_hook(...)`. The core **never imports the settlement layer** — it's a one-way dependency wired at deployment time (`run_front.py` registers `settlement.settle_via_payment_protocol`). With no hook (local Bureau demo), `settle_transfer` returns a stub reference so the chain still completes.
@@ -93,6 +102,8 @@ These are easy to get wrong and have all bitten this codebase before:
 | `STOCKPILE_OFFER_TIMEOUT` | Seconds to wait for offers before evaluating (Bureau ~4s; Mailbox needs 30s+) |
 | `STOCKPILE_SPARSE_NARRATION` | Only stream key milestones to ASI:One (avoids chat-relay 429s); set by `run_front.py` |
 | `STOCKPILE_MAX_REPLANS` | Bounded re-home attempts when a transfer leg is rejected (default 3) |
+| `STOCKPILE_REDIS` | `1`/`true` → `get_inventory`/`distance_between` read the live Redis (`tracks/redis`) via `redis_inventory.py`, falling back to the mock on failure. Unset = mock. |
+| `REDIS_URL` | Redis endpoint for `STOCKPILE_REDIS` mode (default `redis://localhost:6379`). `STOCKPILE_REDIS_TIMEOUT` bounds the socket (default 2s). |
 | `PAYMENT_VERIFY_ONCHAIN` | `false` skips the cosmpy tx query and trusts the commit — **dev/spike only**, no real settlement guarantee |
 | `STOCKPILE_PAYMENT_AMOUNT_FET` / `STOCKPILE_PAYMENT_PER_UNIT_FET` | Flat vs per-unit FET pricing per settlement |
 | `STOCKPILE_*_SEED`, `FETCH_NETWORK` | Agent seeds (loaded from `.env`); network guardrail (testnet only) |

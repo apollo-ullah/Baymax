@@ -174,14 +174,37 @@ def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
 def get_inventory(hospital: str, item: str) -> InventoryState:
     """Return the live inventory of `item` at `hospital`.
 
-    CONTRACT (real impl, Workstream C): read `hospital:{id}:inventory` and
-    `hospital:{id}:meta` from Redis and return an InventoryState. Must NEVER
-    hang — provide a deterministic fallback (per FR1).
-
-    MOCK: hardcoded dict above. Unknown (hospital, item) returns an empty,
-    not-present InventoryState rather than raising, so callers can treat a
-    missing item as "no stock / no spare".
+    Workstream C is now LIVE: when STOCKPILE_REDIS=1, this reads the teammates'
+    Redis (via redis_inventory.py) and returns an InventoryState. On ANY failure
+    — Redis unreachable, missing `redis` lib, hospital unknown to Redis — it
+    falls back to the deterministic mock below, so the seam NEVER hangs (FR1) and
+    the offline harnesses keep working with no Redis.
     """
+    import logging
+
+    import redis_inventory  # lazy: avoids import cycle + keeps redis optional
+
+    if redis_inventory.redis_enabled():
+        try:
+            inv = redis_inventory.redis_get_inventory(hospital, item)
+            logging.getLogger("stockpile.inventory").info(
+                "[inventory] backend=redis %s/%s qty=%s spare=%s safety=%s present=%s",
+                hospital, item, inv.qty, inv.spare_capacity,
+                inv.safety_threshold, inv.present,
+            )
+            return inv
+        except Exception as exc:  # noqa: BLE001 — fail-closed to the mock
+            logging.getLogger("stockpile.inventory").warning(
+                "[inventory] backend=redis FAILED for %s/%s (%s) -> mock fallback",
+                hospital, item, exc,
+            )
+    return _mock_get_inventory(hospital, item)
+
+
+def _mock_get_inventory(hospital: str, item: str) -> InventoryState:
+    """Deterministic mock inventory (the original Wave-0 seam). Unknown
+    (hospital, item) returns a not-present InventoryState rather than raising,
+    so callers can treat a missing item as 'no stock / no spare'."""
     meta = _FACILITY_META.get(hospital, {"lat": 0.0, "lng": 0.0, "capacity_default": 0})
     key = (hospital, item)
     if key not in _MOCK_INVENTORY:
@@ -198,9 +221,20 @@ def get_inventory(hospital: str, item: str) -> InventoryState:
 
 
 def distance_between(a: str, b: str) -> float:
-    """Helper: km between two facilities, from their mock coordinates. Used by
-    the agent layer to populate SupplyOffer.distance_km. (Real impl would read
-    facility meta from Redis.)"""
+    """Helper: km between two facilities. In Redis mode (STOCKPILE_REDIS=1) the
+    coordinates come from Redis meta so distance matches the live inventory;
+    otherwise (and on any Redis failure) it uses the mock coordinates. Used by
+    the agent layer to populate SupplyOffer.distance_km."""
+    import redis_inventory  # lazy
+
+    if redis_inventory.redis_enabled():
+        try:
+            ma = redis_inventory.redis_facility_meta(a)
+            mb = redis_inventory.redis_facility_meta(b)
+            if ma and mb:
+                return _haversine_km(ma["lat"], ma["lng"], mb["lat"], mb["lng"])
+        except Exception:  # noqa: BLE001 — fall back to mock coordinates
+            pass
     ma = _FACILITY_META.get(a)
     mb = _FACILITY_META.get(b)
     if not ma or not mb:
