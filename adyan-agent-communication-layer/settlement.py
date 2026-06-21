@@ -57,7 +57,7 @@ from typing import Optional
 
 # Import agent_base FIRST so the Python 3.14 event-loop workaround is installed
 # before anything constructs an Agent/Protocol (contract rule).
-import agent_base  # noqa: F401  (side-effect: installs current event loop)
+from agent_base import create_text_chat  # noqa: E402  (after loop setup)
 
 from uagents import Context, Protocol
 
@@ -94,6 +94,10 @@ TESTNET_DENOM = "atestfet"
 #: can resolve the payee even from inside a handler (where ctx.agent is an
 #: AgentRepresentation that does NOT expose .wallet).
 _RECIPIENT_WALLETS: dict[str, str] = {}
+
+#: pay-<req_id> -> {reply_to, req_id} so CompletePayment/CancelPayment can
+#: narrate back into the ASI:One chat (CommitPayment is async after CONFIRMED).
+_PAYMENT_PENDING: dict[str, dict] = {}
 
 
 def register_recipient_wallet(agent) -> str:
@@ -186,6 +190,77 @@ def verify_payment_onchain(transaction_id: str) -> bool:
         return False
 
 
+async def verify_payment_onchain_with_retry(
+    transaction_id: str,
+    *,
+    retries: int = 6,
+    delay_s: float = 2.0,
+) -> bool:
+    """Poll testnet until the tx is indexed, or give up.
+
+    ASI:One sends CommitPayment as soon as the wallet signs; the dorado-1 RPC
+    often needs a few seconds before query_tx succeeds. A single immediate query
+    falsely fails and we CancelPayment — which ASI:One surfaces as
+    "Failed to process payment response by agent".
+    """
+    if not _verify_onchain_enabled():
+        return True
+    for attempt in range(max(1, retries)):
+        ok = await asyncio.to_thread(verify_payment_onchain, transaction_id)
+        if ok:
+            return True
+        if attempt < retries - 1:
+            await asyncio.sleep(delay_s)
+    return False
+
+
+def _resolve_pending_key(reference: Optional[str]) -> str:
+    """Map a CommitPayment.reference back to our stored _PAYMENT_PENDING key.
+
+    ASI:One does not always echo the exact RequestPayment.reference back in the
+    CommitPayment (it may be empty or rewritten). When the reference does not
+    match but there is exactly ONE payment in flight, fall back to it — otherwise
+    the payment_confirmed / terminal CONFIRMED narration (which is keyed on this
+    reference) would be silently skipped even though the payment succeeded.
+    """
+    key = reference or ""
+    if key in _PAYMENT_PENDING:
+        return key
+    if len(_PAYMENT_PENDING) == 1:
+        return next(iter(_PAYMENT_PENDING))
+    return key
+
+
+async def _narrate_payment(ctx: Context, reference: Optional[str], text: str) -> None:
+    pending = _PAYMENT_PENDING.get(_resolve_pending_key(reference))
+    reply_to = pending.get("reply_to") if pending else None
+    if reply_to:
+        await ctx.send(reply_to, create_text_chat(text, end_session=False))
+
+
+async def _finalize_from_payment(
+    ctx: Context, reference: Optional[str], tx_id: str | None,
+) -> None:
+    key = _resolve_pending_key(reference)
+    pending = _PAYMENT_PENDING.pop(key, None)
+    if not pending:
+        return
+    from stockpile_agents import finalize_after_payment  # lazy import
+
+    await finalize_after_payment(
+        ctx, pending["req_id"], key, tx_id=tx_id,
+    )
+
+
+async def _fail_from_payment(ctx: Context, reference: Optional[str], reason: str) -> None:
+    pending = _PAYMENT_PENDING.pop(_resolve_pending_key(reference), None)
+    if not pending:
+        return
+    from stockpile_agents import fail_after_payment  # lazy import
+
+    await fail_after_payment(ctx, pending["req_id"], reason)
+
+
 # ---------------------------------------------------------------------------
 # Protocol factory + handlers.
 # ---------------------------------------------------------------------------
@@ -210,7 +285,7 @@ def build_payment_protocol() -> Protocol:
         # Run the (blocking) cosmpy on-chain query in a worker thread so a slow or
         # unreachable testnet RPC can never freeze the agent's event loop (it would
         # otherwise stall all other messages/intervals for the whole query).
-        ok = await asyncio.to_thread(verify_payment_onchain, msg.transaction_id)
+        ok = await verify_payment_onchain_with_retry(msg.transaction_id)
         if ok:
             verified = "skipped (PAYMENT_VERIFY_ONCHAIN=false)" \
                 if not _verify_onchain_enabled() else "succeeded on testnet"
@@ -219,6 +294,13 @@ def build_payment_protocol() -> Protocol:
                 f"-> sending CompletePayment."
             )
             await ctx.send(sender, CompletePayment(transaction_id=msg.transaction_id))
+            await _narrate_payment(
+                ctx,
+                msg.reference,
+                f"**payment_confirmed** — Testnet settlement complete "
+                f"(tx `{msg.transaction_id}`).",
+            )
+            await _finalize_from_payment(ctx, msg.reference, msg.transaction_id)
         else:
             ctx.logger.warning(
                 f"[payment] Verification FAILED for tx={msg.transaction_id} "
@@ -228,6 +310,16 @@ def build_payment_protocol() -> Protocol:
                 transaction_id=msg.transaction_id,
                 reason="on-chain verification failed (tx not found or unsuccessful)",
             ))
+            await _narrate_payment(
+                ctx,
+                msg.reference,
+                f"**payment_failed** — Could not verify tx `{msg.transaction_id}` "
+                f"on testnet.",
+            )
+            await _fail_from_payment(
+                ctx, msg.reference,
+                "on-chain verification failed (tx not found or unsuccessful)",
+            )
 
     @proto.on_message(RejectPayment)
     async def on_reject(ctx: Context, sender: str, msg: RejectPayment):
@@ -258,17 +350,60 @@ async def request_payment(
     CommitPayment once they approve + sign.
     """
     funds = make_funds(amount)
+    recipient = resolve_recipient_wallet(ctx)
+
+    # ASI:One's chat UI builds the in-chat "Approve FET Payment" card from
+    # RequestPayment.metadata — specifically metadata["provider_agent_wallet"]
+    # (the fetch1... wallet where the FET should land) and metadata["fet_network"]
+    # (which chain). If metadata is omitted (None), ASI:One cannot construct the
+    # card and rejects the inbound payment message at ingestion, surfacing
+    # "Failed to process payment response by agent. Please try sending a message
+    # again." — BEFORE the user can approve anything. So we ALWAYS send these
+    # keys, mirroring the canonical fetchai/innovation-lab-examples `fet-example`.
+    # All values must be plain strings (metadata is dict[str, str | dict[str,str]]).
+    # Testnet signals the ASI:One wallet card reads to charge TestFET (Dorado /
+    # stable-testnet) rather than mainnet FET. The official fet-example sets
+    # mainnet="false" + fet_network="stable-testnet" (driven by FET_USE_TESTNET=true
+    # in its .env); we hardcode the testnet values because STOCKPILE is testnet-only
+    # (agent_base fails closed on any non-testnet network). "test"="true" mirrors the
+    # Fetch.ai team's guidance to flag the payment as TestFET (harmless superset —
+    # the documented card keys are mainnet/fet_network; extra string keys are ignored).
+    metadata = {
+        "provider_agent_wallet": recipient,
+        "fet_network": "stable-testnet",
+        "mainnet": "false",
+        "test": "true",
+        "content": (
+            description
+            or "Approve to finalize the STOCKPILE inter-facility transfer settlement."
+        ),
+    }
+
+    # Defensive: the card/on-chain transfer needs a real fetch1... wallet. An
+    # agent1... recipient means register_recipient_wallet(agent) was not called at
+    # construction (see resolve_recipient_wallet) — ASI:One would reject it. On the
+    # live path run_front.py wires this, so this should never fire.
+    if not recipient.startswith("fetch1"):
+        ctx.logger.error(
+            f"[payment] RequestPayment recipient {recipient!r} is NOT a fetch1... "
+            f"wallet — register_recipient_wallet(agent) was not wired at "
+            f"construction. ASI:One will reject this payment. "
+            f"See run_front.py / settlement.register_recipient_wallet."
+        )
+
     req = RequestPayment(
         accepted_funds=[funds],
-        recipient=resolve_recipient_wallet(ctx),
+        recipient=recipient,
         deadline_seconds=PAYMENT_DEADLINE_S,
         reference=reference,
         description=description,
+        metadata=metadata,
     )
     ctx.logger.info(
         f"[payment] Sending RequestPayment to {user_address}: "
         f"{funds.amount} {funds.currency} -> {req.recipient} "
-        f"(ref={reference}, deadline={PAYMENT_DEADLINE_S}s)"
+        f"(network={metadata['fet_network']}, ref={reference}, "
+        f"deadline={PAYMENT_DEADLINE_S}s)"
     )
     await ctx.send(user_address, req)
     return req
@@ -345,6 +480,9 @@ async def settle_via_payment_protocol(
         reference=reference,
         description=description,
     )
+    chat = reply_to or user_address
+    if chat:
+        _PAYMENT_PENDING[reference] = {"reply_to": chat, "req_id": req_id}
     ctx.logger.info(
         f"[payment] settle_via_payment_protocol: requested {amount} "
         f"FET for {req_id} from {user_address}; reference={reference}. "

@@ -110,7 +110,8 @@ _GREETING_RE = re.compile(
 # Our own milestone narration echoed back from ASI:One must NOT re-trigger a deal.
 _MILESTONE_ECHO_RE = re.compile(
     r"^\s*\*\*(?:shortfall_detected|requesting|collecting_offers|evaluating|"
-    r"proposing|settling|confirmed|failed|re_planning|idle)\*\*",
+    r"proposing|settling|confirmed|failed|re_planning|idle|"
+    r"payment_confirmed|payment_failed)\*\*",
     re.IGNORECASE,
 )
 
@@ -118,6 +119,7 @@ _MILESTONE_ECHO_RE = re.compile(
 _ASI1_META_RE = re.compile(
     r"(sorry, something went wrong|want me to help|manual procurement it is|"
     r"no offer artifacts|sometimes the best offers|struck out|"
+    r"failed to process payment|please try sending a message again|"
     r"draft (?:a )?follow-up|draft those procurement)",
     re.IGNORECASE,
 )
@@ -405,8 +407,7 @@ async def on_intent(ctx: Context, sender: str, text: str) -> None:
         )
         return
 
-    # One active negotiation per chat user — prevents duplicate broadcasts when
-    # ASI:One delivers delayed/duplicate messages.
+    # Block duplicate starts while one is running (including awaiting wallet pay).
     for neg in NEGOTIATIONS.values():
         if neg.get("reply_to") == sender and not neg.get("done"):
             ctx.logger.info(

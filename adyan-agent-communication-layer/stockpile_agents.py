@@ -365,7 +365,68 @@ async def _settle(ctx: Context, req_id: str):
         detail = (f"Transfer confirmed ({legs}) to {neg['requester']} — covered {covered}/"
                   f"{neg['need']} {neg['item']}; {short} STILL SHORT, escalate the residual to "
                   f"manual procurement. Settlement: {tx}.")
+
+    # Live ASI:One + Payment Protocol: RequestPayment is async — do NOT send
+    # CONFIRMED with end_session yet or ASI:One closes the chat before the wallet
+    # UI can show the FET approval prompt. finalize_after_payment() runs on
+    # CompletePayment (see settlement.py).
+    if _SETTLEMENT_HOOK is not None and neg.get("reply_to"):
+        from settlement import _amount_for_total  # lazy: avoids import cycle at load
+
+        amount = _amount_for_total(covered)
+        neg["awaiting_payment"] = True
+        await _step(
+            ctx, neg, NegotiationState.SETTLING,
+            f"Negotiation complete — approve **{amount} FET** on testnet to finalize "
+            f"(ref {tx}). In ASI:One, open your **wallet** (top bar) if no payment "
+            f"prompt appears in chat.",
+            narrate=True, final=False,
+        )
+        return
+
     await _step(ctx, neg, NegotiationState.CONFIRMED, detail, narrate=True, final=True)
+    neg["done"] = True
+    _maybe_exit(ctx)
+
+
+async def finalize_after_payment(
+    ctx: Context, req_id: str, settlement_ref: str, *, tx_id: str | None = None,
+) -> None:
+    """Send the terminal CONFIRMED chat milestone after on-chain payment succeeds."""
+    neg = NEGOTIATIONS.get(req_id)
+    if not neg or neg.get("done"):
+        return
+    accepted_legs = [neg["leg"][pid] for pid in neg["accepts"] if pid in neg["leg"]]
+    covered = neg.get("covered") or sum(leg["quantity"] for leg in accepted_legs)
+    short = max(0, neg["need"] - covered)
+    legs = "; ".join(f"{leg['quantity']} {neg['item']} from {leg['offerer']}"
+                     for leg in accepted_legs)
+    tx_note = f" On-chain tx: `{tx_id}`." if tx_id else ""
+    if short <= 0:
+        detail = (f"Transfer confirmed ({legs}) to {neg['requester']} — full need of "
+                  f"{neg['need']} {neg['item']} met. Settlement: {settlement_ref}.{tx_note}")
+    else:
+        detail = (f"Transfer confirmed ({legs}) to {neg['requester']} — covered {covered}/"
+                  f"{neg['need']} {neg['item']}; {short} still short. "
+                  f"Settlement: {settlement_ref}.{tx_note}")
+    await _step(ctx, neg, NegotiationState.CONFIRMED, detail, narrate=True, final=True)
+    neg["awaiting_payment"] = False
+    neg["done"] = True
+    _maybe_exit(ctx)
+
+
+async def fail_after_payment(ctx: Context, req_id: str, reason: str) -> None:
+    """Close the chat session when payment verification fails."""
+    neg = NEGOTIATIONS.get(req_id)
+    if not neg or neg.get("done"):
+        return
+    await _step(
+        ctx, neg, NegotiationState.FAILED,
+        f"Payment could not be verified on testnet ({reason}). The transfer legs "
+        f"were accepted but settlement was not confirmed on-chain.",
+        narrate=True, final=True,
+    )
+    neg["awaiting_payment"] = False
     neg["done"] = True
     _maybe_exit(ctx)
 

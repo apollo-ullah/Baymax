@@ -1,9 +1,11 @@
 # STOCKPILE — Submission deliverables checklist
 
 Tracking the Fetch.ai **"From Intent to Action"** submission artifacts and the
-mandatory requirements. Code is complete; the remaining boxes are **browser-gated
-manual steps** (Agentverse Mailbox connect, ASI:One demo, video) that cannot be
-done from the build environment.
+mandatory requirements. Code is complete and the full flow is **confirmed live on
+ASI:One + Dorado testnet** (intent → 3-hospital negotiation → split transfer →
+in-chat TestFET payment → on-chain settlement → confirmed). The only remaining
+boxes are **artifact placeholders** (Agentverse profile URLs, shared-chat URL,
+demo video, repo URL) to paste in below.
 
 ---
 
@@ -37,8 +39,8 @@ done from the build environment.
 | 1 | **Agent(s) built on Fetch.ai uAgents** | Three `uagents.Agent`s (Hospital A/B/C) built via `agent_base.build_hospital_agent`; full PRD §10 negotiation in `stockpile_agents.py`. | **Done** (verified: Bureau demo + 3-agent self-test run end to end) |
 | 2 | **ASI:One Chat Protocol** (official, schema-matched) | Official `chat_protocol_spec` re-exported from `protocol.py` (never redefined); `agent_base.build_chat_protocol` acks + parses; FRONT includes it with `publish_manifest=True`. | **Done** (verified: chat → on_intent → narration loop runs; manifest publishes `AgentChatProtocol`) |
 | 3 | **Natural-language intent → action** | `front_agent.parse_intent` turns "Hospital A is short on IV fluids" into a structured request and calls `start_negotiation`; every milestone narrates back to the chat. LLM-parser seam ready behind the same signature. | **Done** (verified: intent parsed + negotiation kicked off in self-test) |
-| 4 | **Discoverable on Agentverse via Mailbox** | Each agent has its own runner (`run_front.py`, `run_hospital_b.py`, `run_hospital_c.py`) building it with `mailbox=True`, `publish_agent_details=True`, and a README path for the profile. | **Pending-manual** (code done + addresses verified; the one-time **Connect → Mailbox** needs a browser login — see README) |
-| 5 | **Payment Protocol settlement on testnet** | Official `payment_protocol_spec` (seller role) in `settlement.py`: `RequestPayment → CommitPayment → CompletePayment/CancelPayment`, with cosmpy on-chain verification (in a worker thread) on `fetchai_stable_testnet`. `run_front.py` registers it on the negotiation core so `settle_transfer` delegates directly on settle. | **Done (code) / Pending-manual (live tx)** (verified end to end offline by `wave2_e2e_check.py`: chat → negotiate → settle → `RequestPayment → CommitPayment → CompletePayment`; the live signed tx needs an ASI:One wallet) |
+| 4 | **Discoverable on Agentverse via Mailbox** | Each agent has its own runner (`run_front.py`, `run_hospital_b.py`, `run_hospital_c.py`) building it with `mailbox=True`, `publish_agent_details=True`, and a README path for the profile. | **Live** (FRONT confirmed: `Successfully registered as mailbox agent in Agentverse`, found + chatted on ASI:One; B & C reachable — both returned live offers during the run. Only the **profile-URL** placeholders above remain to paste.) |
+| 5 | **Payment Protocol settlement on testnet** | Official `payment_protocol_spec` (seller role) in `settlement.py`: `RequestPayment → CommitPayment → CompletePayment/CancelPayment`, with cosmpy on-chain verification (in a worker thread) on `fetchai_stable_testnet`. `RequestPayment.metadata` carries `provider_agent_wallet`/`fet_network` so ASI:One renders the in-chat TestFET card. `run_front.py` registers it on the negotiation core so `settle_transfer` delegates directly on settle. | **Done — LIVE** (confirmed end to end on ASI:One + Dorado: card rendered, user signed TestFET, `CommitPayment → CompletePayment → CONFIRMED`. On-chain tx `912BB2030A5F14467F434D4CDB0F1DDE23EE6E72E19B9F778998D17A5046557F`; an earlier run passed real cosmpy on-chain verification for tx `6971C55A4473CC317CD426D6593D211F58FDB1D3B0D5533DBF7A4517298C3C17`. Also verified offline by `wave2_e2e_check.py`.) |
 | 6 | **innovationlab + hackathon tags / testnet-only** | `README.md` carries the `innovationlab` + `hackathon` badges; `FETCH_NETWORK=testnet` is forced in `agent_base.py` and `NetworkConfig.fetchai_stable_testnet()` is used for verification — never mainnet, never real funds. | **Done** (verified: `agent_base.FET_NETWORK == "testnet"`; badges present in README) |
 
 Legend: **Done** = implemented + verified in-repo. **Pending-manual** = code/config
