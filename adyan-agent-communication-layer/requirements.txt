@@ -37,6 +37,9 @@ opencv-python
 # --- Wave 3 (optional): external-supplier order via Browserbase --------------
 # Only needed when BAYMAX_BROWSERBASE=1. The order seam falls back to a
 # deterministic mock when these are absent, so offline harnesses don't need them.
-# stagehand
-# playwright
+# Pin to the 0.5.x line: it is the Playwright-backed agentic API (page.act /
+# page.extract) that supplier_order.py drives. The 3.x line is a different,
+# REST-only SDK and is NOT compatible. playwright is a stagehand dependency;
+# browserbase env runs the browser in the cloud, so no `playwright install` needed.
+# stagehand==0.5.14
 # browserbase

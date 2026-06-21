@@ -425,17 +425,29 @@ def parse_intent(text: str) -> dict:
 def _resolve_parser():
     """Pick the active intent parser.
 
-    Returns the ASI:One LLM parser when BAYMAX_ASI1_API_KEY is set AND the
-    optional `openai` client is importable; otherwise the deterministic
-    keyword/regex parse_intent(). Both share the exact same signature
-    (str -> dict), so on_intent() never changes.
+    When BAYMAX_CLAUDE_INTENT is truthy AND ANTHROPIC_API_KEY is set, return a
+    Claude-backed parser (claude_intent.parse_intent_llm) wrapped so that ANY
+    exception falls back to the deterministic parse_intent — a parser error must
+    never drop a user's message (fail-closed). Otherwise return the deterministic
+    keyword/regex parse_intent() unchanged. Both share the exact same signature
+    (str -> dict), so on_intent() never changes. Default (no env) = byte-for-byte
+    the deterministic parser, so every offline harness behaves identically.
     """
-    if os.getenv("BAYMAX_ASI1_API_KEY"):
+    if os.getenv("BAYMAX_CLAUDE_INTENT", "").strip().lower() in ("1", "true", "yes", "on") \
+            and os.getenv("ANTHROPIC_API_KEY"):
         try:
-            from openai import OpenAI  # noqa: F401  (presence check only)
-            # return parse_intent_llm   # ← enable once the seam above is uncommented
+            from claude_intent import parse_intent_llm  # lazy: only when enabled
         except Exception:
-            pass
+            return parse_intent  # SDK/module unavailable -> deterministic
+
+        def _claude_then_fallback(text: str) -> dict:
+            try:
+                return parse_intent_llm(text)
+            except Exception:
+                return parse_intent(text)
+
+        return _claude_then_fallback
+
     return parse_intent
 
 

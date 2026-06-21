@@ -285,12 +285,39 @@ def rank_offers(need: SupplyNeed, offers: List[OfferView]) -> RankedPlan:
     (quantity, distance/ETA, expiry, urgency) and returns the same RankedPlan
     shape with a natural-language rationale. Signature is frozen here.
 
+    CLAUDE: when BAYMAX_CLAUDE_RANKING is truthy, delegate to
+    claude_ranking.rank_offers_via_claude() (lazy import), which asks Claude to
+    reason over all constraints and returns the SAME RankedPlan shape with an
+    intelligent natural-language rationale. On ANY failure (missing key, API
+    error, malformed output, lib absent) we fall back to the mock below —
+    fail-closed, so the negotiation never hangs and offline harnesses need no
+    network. Default (no env) = mock.
+
     MOCK: a deterministic nearest-first greedy allocator. Sorts offers by
     distance (ties broken by larger quantity), then takes from each in turn
     until the need is met. This deterministically produces the canonical split
     (150 from the near facility + 50 from the far one) for the demo scenario,
     and degrades cleanly to full-cover (one allocation) and no-offer (empty).
     """
+    import logging
+
+    import claude_ranking  # lazy: keeps the anthropic SDK optional
+
+    if claude_ranking.claude_ranking_enabled():
+        try:
+            plan = claude_ranking.rank_offers_via_claude(need, offers)
+            logging.getLogger("baymax.ranking").info(
+                "[ranking] backend=claude need=%s/%s offers=%s -> covered=%s legs=%s",
+                need.quantity_needed, need.item, len(offers),
+                plan.total_covered, len(plan.allocations),
+            )
+            return plan
+        except Exception as exc:  # noqa: BLE001 — fail-closed to the mock
+            logging.getLogger("baymax.ranking").warning(
+                "[ranking] backend=claude FAILED for %s/%s (%s) -> mock fallback",
+                need.quantity_needed, need.item, exc,
+            )
+
     usable = [o for o in offers if o.quantity_available > 0]
     usable.sort(key=lambda o: (o.distance_km, -o.quantity_available))
 
