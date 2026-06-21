@@ -619,10 +619,19 @@ def run_selftest():
         network=FET_NETWORK,
     )
     narrated: list[str] = []
+    _approved = {"sent": False}
 
     async def _collect(ctx: Context, sender: str, text: str) -> None:
         narrated.append(text)
         ctx.logger.info(f"[NARRATION #{len(narrated)}] {text}")
+        # Stand in for the ASI:One admin: authorize the trade once we hit the
+        # Wave 3 approval gate, so the self-test exercises the full
+        # chat -> negotiate -> approve -> settle -> narrate loop and self-exits
+        # at CONFIRMED (instead of halting forever at AWAITING_APPROVAL).
+        if "awaiting_approval" in text.lower() and not _approved["sent"]:
+            _approved["sent"] = True
+            ctx.logger.info("[SELF-TEST] admin decision -> 'approve'")
+            await ctx.send(sender, create_text_chat("approve"))
 
     collector.include(build_chat_protocol(_collect), publish_manifest=True)
     collector_addr = collector.address
