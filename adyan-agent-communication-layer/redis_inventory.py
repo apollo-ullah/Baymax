@@ -75,7 +75,10 @@ def _client():
     if _client_cache is None:
         import redis  # local import: missing lib => fall back to mock
 
-        url = os.getenv("REDIS_URL", DEFAULT_REDIS_URL)
+        # `or` (not getenv default) so an empty REDIS_URL="" — as shipped in
+        # .env — falls back to the local default instead of failing from_url()
+        # with "must specify one of the following schemes" -> silent mock.
+        url = os.getenv("REDIS_URL") or DEFAULT_REDIS_URL
         _client_cache = redis.Redis.from_url(
             url,
             decode_responses=True,
