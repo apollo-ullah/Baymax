@@ -81,6 +81,7 @@ import baymax_agents as sp
 from settlement import (
     build_payment_protocol,
     register_recipient_wallet,
+    settle_order_via_payment_protocol,
     settle_via_payment_protocol,
 )
 
@@ -114,6 +115,10 @@ def build_agent():
     # chat user (reply_to) it already holds — so billing reflects exactly what
     # settled (post re-plan), with no polling and no double-fire.
     sp.register_settlement_hook(settle_via_payment_protocol)
+
+    # (5) Wire ORDER settlement: an admin who chooses to order externally settles
+    # the purchase via the same Payment Protocol (FET) to a supplier wallet.
+    sp.register_order_settlement_hook(settle_order_via_payment_protocol)
 
     return agent, wallet_addr
 
