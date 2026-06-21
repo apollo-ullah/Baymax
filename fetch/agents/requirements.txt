@@ -2,5 +2,6 @@ uagents
 httpx
 python-dotenv
 redis
+anthropic
 fastapi
 uvicorn[standard]

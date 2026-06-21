@@ -37,7 +37,7 @@ from typing import Optional
 # The Redis track owns the schema + key helpers. Add its src/ to the path and
 # reuse schema.* (single source of truth for key names — never redefine them).
 # adyan-agent-communication-layer/redis_inventory.py -> parents[1] == repo root.
-_REDIS_SRC = Path(__file__).resolve().parents[1] / "tracks" / "redis" / "src"
+_REDIS_SRC = Path(__file__).resolve().parents[1] / "redis" / "src"
 if str(_REDIS_SRC) not in sys.path:
     sys.path.insert(0, str(_REDIS_SRC))
 

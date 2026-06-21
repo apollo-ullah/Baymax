@@ -400,6 +400,12 @@ async def request_payment(
         metadata=metadata,
     )
     ctx.logger.info(
+        "[FETCH] action=send_request_payment to=%s amount=%s currency=%s "
+        "recipient_wallet=%s network=%s ref=%s deadline_s=%d",
+        user_address, funds.amount, funds.currency, req.recipient,
+        metadata["fet_network"], reference, PAYMENT_DEADLINE_S,
+    )
+    ctx.logger.info(
         f"[payment] Sending RequestPayment to {user_address}: "
         f"{funds.amount} {funds.currency} -> {req.recipient} "
         f"(network={metadata['fet_network']}, ref={reference}, "
