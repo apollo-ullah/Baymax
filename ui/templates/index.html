@@ -858,7 +858,7 @@ function _subscribeSSE() {
 
 function sendDecision(reqId, decision) {
   if (!reqId) return;
-  fetch('/req/' + reqId + '/' + decision)
+  fetch('/req/' + reqId + '/' + decision, {method: 'POST'})
     .then(() => {
       document.getElementById('approval-banner').style.display = 'none';
       appendNeg({state: 'decision_sent', detail: decision + ' sent for ' + reqId});

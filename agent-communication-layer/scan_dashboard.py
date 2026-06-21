@@ -209,22 +209,31 @@ async def scan_and_negotiate(request: Request):
     item = body.get("item", SCAN_ITEM)
     a, b = await asyncio.gather(_scan_worker(WORKER_A_URL), _scan_worker(WORKER_B_URL))
 
+    # If the camera scan failed, do NOT fabricate a need from count=0/reserve=1 —
+    # defer to the agent's inventory-derived shortfall (quantity=None) so the real
+    # shortfall (and the split it implies) drives the negotiation.
+    if "error" in a:
+        dashboard_bus.push_trigger(item, requester="Hospital A", quantity=None)
+        return JSONResponse({
+            "message": f"Camera offline — negotiating {item} from inventory shortfall.",
+            "a": a, "b": b, "triggered": True,
+        })
+
     # Derive the shortfall from worker A's scan result.
     a_count = a.get("count", 0)
     a_reserve = a.get("reserve", 1)
     a_shortfall = max(0, a_reserve - a_count)
 
-    if a_shortfall <= 0 and "error" not in a:
+    if a_shortfall <= 0:
         return JSONResponse({
             "message": f"No shortfall detected: Hospital A has {a_count} {item} (reserve {a_reserve}).",
             "a": a, "b": b, "triggered": False,
         })
 
-    quantity = a_shortfall or None
-    dashboard_bus.push_trigger(item, requester="Hospital A", quantity=quantity)
+    dashboard_bus.push_trigger(item, requester="Hospital A", quantity=a_shortfall)
     return JSONResponse({
         "message": f"Shortfall detected ({a_count} on hand, reserve {a_reserve}). "
-                   f"Trigger pushed for {quantity} {item}.",
+                   f"Trigger pushed for {a_shortfall} {item}.",
         "a": a, "b": b, "triggered": True,
     })
 
