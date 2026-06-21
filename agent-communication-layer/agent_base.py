@@ -92,8 +92,15 @@ SURPLUS_FACILITIES = [f for f, cfg in FACILITIES.items() if cfg["role"] == "surp
 
 
 def seed_for(facility: str) -> str:
-    """The agent seed for a facility: env var if set, else the dev fallback."""
-    return os.getenv(FACILITIES[facility]["seed_env"]) or _DEV_SEEDS[facility]
+    """The agent seed for a facility: BAYMAX_* env, then STOCKPILE_* alias, else dev fallback.
+
+    The sibling .env names the real seeds STOCKPILE_*_SEED (legacy), but FACILITIES
+    declares them as BAYMAX_*_SEED. Without this alias a live run silently falls back
+    to the public dev seeds (different, unfunded addresses)."""
+    env_name = FACILITIES[facility]["seed_env"]                      # e.g. BAYMAX_FRONT_SEED
+    return (os.getenv(env_name)
+            or os.getenv(env_name.replace("BAYMAX_", "STOCKPILE_"))  # .env legacy names
+            or _DEV_SEEDS[facility])
 
 
 def address_for(facility: str) -> str:
