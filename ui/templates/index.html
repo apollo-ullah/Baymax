@@ -498,55 +498,92 @@ function renderWho(items) {
     kv('source', items.who_source || 'disease.sh / WHO/JHU');
 }
 
-// VISION — two laptop cameras side by side
-let _visionTs = Date.now();
+// VISION — two laptop cameras, stable DOM so images never flicker on poll
+let _visionTs = 0;
+let _lastCapturedAt = null;
+
+function _buildVisionLayout() {
+  document.getElementById('card-vision').innerHTML = `
+    <div style="display:flex;gap:12px;align-items:flex-start">
+      <div style="flex:1;min-width:0">
+        <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">💻 Hospital A</div>
+        <div style="background:#111;border-radius:8px;overflow:hidden;aspect-ratio:4/3;border:1px solid var(--border);display:flex;align-items:center;justify-content:center">
+          <img id="img-hospital_a" src="" alt="Hospital A" style="width:100%;height:100%;object-fit:cover;display:none">
+          <span id="ph-hospital_a" style="color:var(--muted);font-size:11px">no capture yet</span>
+        </div>
+        <div id="count-hospital_a" style="text-align:center;margin-top:6px;min-height:40px"></div>
+      </div>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">💻 Hospital B</div>
+        <div style="background:#111;border-radius:8px;overflow:hidden;aspect-ratio:4/3;border:1px solid var(--border);display:flex;align-items:center;justify-content:center">
+          <img id="img-hospital_b" src="" alt="Hospital B" style="width:100%;height:100%;object-fit:cover;display:none">
+          <span id="ph-hospital_b" style="color:var(--muted);font-size:11px">no capture yet</span>
+        </div>
+        <div id="count-hospital_b" style="text-align:center;margin-top:6px;min-height:40px"></div>
+      </div>
+    </div>
+    <div id="vision-meta" style="margin-top:8px"></div>`;
+}
+
+function _loadImage(hid, ts) {
+  const img = document.getElementById('img-' + hid);
+  const ph  = document.getElementById('ph-' + hid);
+  if (!img) return;
+  const src = `/image/hospital/${hid}?t=${ts}`;
+  const tmp = new Image();
+  tmp.onload  = () => { img.src = src; img.style.display = 'block'; if (ph) ph.style.display = 'none'; };
+  tmp.onerror = () => { img.style.display = 'none'; if (ph) { ph.textContent = 'no capture yet'; ph.style.display = ''; } };
+  tmp.src = src;
+}
+
 function renderVision(s) {
-  // Bump the cache-buster every poll so the live camera feed refetches.
-  _visionTs = Date.now();
-  const el = document.getElementById('card-vision');
+  if (!document.getElementById('img-hospital_a')) _buildVisionLayout();
   const v = s.vision;
   const ha = v && v.hospital_a ? (v.hospital_a.saline ?? v.hospital_a.saline_bags ?? null) : null;
   const hb = v && v.hospital_b ? (v.hospital_b.saline ?? v.hospital_b.saline_bags ?? null) : null;
 
-  const camCard = (hid, label, count) => {
-    const countHtml = count !== null
-      ? `<div class="count" style="font-size:26px;font-weight:700;color:var(--accent);margin:4px 0">${count}</div>
-         <div style="font-size:10px;color:var(--muted)">saline bags</div>`
-      : `<div style="font-size:11px;color:var(--muted);margin-top:6px">no capture yet</div>`;
-    return `
-      <div style="flex:1;min-width:0">
-        <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">
-          💻 ${label}
-        </div>
-        <div style="position:relative;background:#111;border-radius:8px;overflow:hidden;aspect-ratio:4/3;border:1px solid var(--border)">
-          <img
-            id="img-${hid}"
-            src="/image/hospital/${hid}?t=${_visionTs}"
-            alt="${label} camera"
-            style="width:100%;height:100%;object-fit:cover"
-            onerror="this.style.opacity='0.2'"
-          >
-        </div>
-        <div style="text-align:center;margin-top:6px">${countHtml}</div>
-      </div>`;
-  };
+  // Update counts in-place — no image reload
+  ['hospital_a','hospital_b'].forEach((hid, i) => {
+    const cnt = document.getElementById('count-' + hid);
+    const n = i === 0 ? ha : hb;
+    if (cnt) cnt.innerHTML = n !== null
+      ? `<div style="font-size:26px;font-weight:700;color:var(--accent)">${n}</div><div style="font-size:10px;color:var(--muted)">saline bags</div>`
+      : '';
+  });
 
-  el.innerHTML = `
-    <div style="display:flex;gap:12px;align-items:flex-start">
-      ${camCard('hospital_a', 'Hospital A', ha)}
-      ${camCard('hospital_b', 'Hospital B', hb)}
-    </div>
-    ${v && v.captured_at ? `<div style="margin-top:8px">${kv('captured', v.captured_at.replace('T',' ').slice(0,19)+' UTC')}</div>` : ''}
-    ${v && v.notes && v.notes.toLowerCase() !== 'none' ? kv('notes', escHtml(v.notes)) : ''}
-  `;
+  // Only reload images when a new capture has actually arrived
+  const capturedAt = v && v.captured_at;
+  if (capturedAt && capturedAt !== _lastCapturedAt) {
+    _lastCapturedAt = capturedAt;
+    _visionTs = Date.now();
+    _loadImage('hospital_a', _visionTs);
+    _loadImage('hospital_b', _visionTs);
+  }
+
+  const meta = document.getElementById('vision-meta');
+  if (meta) meta.innerHTML = capturedAt
+    ? kv('captured', capturedAt.replace('T',' ').slice(0,19)+' UTC') +
+      (v.notes && v.notes.toLowerCase() !== 'none' ? kv('notes', escHtml(v.notes)) : '')
+    : '';
 }
 
 function refreshCameraImages() {
   _visionTs = Date.now();
+  _lastCapturedAt = null; // force next poll to reload
+  _loadImage('hospital_a', _visionTs);
+  _loadImage('hospital_b', _visionTs);
+}
+
+function clearCameraImages() {
   ['hospital_a','hospital_b'].forEach(hid => {
     const img = document.getElementById('img-' + hid);
-    if (img) img.src = `/image/hospital/${hid}?t=${_visionTs}`;
+    const ph  = document.getElementById('ph-' + hid);
+    if (img) { img.src = ''; img.style.display = 'none'; }
+    if (ph)  { ph.textContent = '📷 capturing…'; ph.style.display = ''; }
+    const cnt = document.getElementById('count-' + hid);
+    if (cnt) cnt.innerHTML = '';
   });
+  _lastCapturedAt = null;
 }
 
 // CLAUDE REASONING
@@ -682,6 +719,7 @@ function triggerCapture() {
     .catch(() => {});
 
   // 2) Capture this machine's camera (Hospital A) locally.
+  clearCameraImages(); // clear stale images immediately
   fetch('/api/capture', { method: 'POST', headers: {'Content-Type':'application/json'},
     body: JSON.stringify({}) })
     .then(r => r.json())
