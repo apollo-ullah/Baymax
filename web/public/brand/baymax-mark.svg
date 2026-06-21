@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" fill="none" role="img" aria-label="Baymax mark">
+  <!-- Placeholder mark: a soft "facility node" (rounded square + health cross)
+       linked into the wider care network (satellite node + edge).
+       Uses currentColor so it inherits text color. Swap this file to rebrand. -->
+  <rect x="2.5" y="2.5" width="25" height="25" rx="8.5" fill="currentColor" opacity="0.10" />
+  <rect x="3.4" y="3.4" width="23.2" height="23.2" rx="7.6" stroke="currentColor" stroke-width="1.7" />
+  <path d="M15 9.5v11M9.5 15h11" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" />
+  <path d="M23.5 23.5 L31 31" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" opacity="0.85" />
+  <circle cx="33.5" cy="33.5" r="4.3" fill="currentColor" />
+  <circle cx="33.5" cy="33.5" r="6.6" stroke="currentColor" stroke-width="1.4" opacity="0.35" />
+</svg>

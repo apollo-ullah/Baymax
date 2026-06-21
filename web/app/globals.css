@@ -1,0 +1,267 @@
+@import "tailwindcss";
+
+/* ============================================================================
+   BAYMAX — design tokens
+   Calm is the resting state (warm off-white + teal). When a crisis is active,
+   `[data-mode="crisis"]` warms the whole room: canvas, accent, glow, status.
+   The cream is the "all-clear" semantic — not decoration.
+============================================================================ */
+
+:root {
+  /* — Paper / canvas — */
+  --paper: #f7f5f1;
+  --paper-raised: #fbfaf7;
+  --paper-sunken: #f0ece3;
+
+  /* — Ink — */
+  --ink: #15191c;
+  --ink-2: #4f4b43;
+  --ink-3: #6e695f; /* tuned to clear WCAG AA on the warm canvas */
+  --hairline: #e6e1d6;
+  --hairline-strong: #d8d2c4;
+
+  /* — Calm primary (teal). Deepened so accent text + filled buttons clear
+       AA contrast on the canvas while reading as the same medical teal. — */
+  --teal: #147a6b;
+  --teal-deep: #0f5a50;
+  --teal-soft: #e3efeb;
+
+  /* — Urgency (coral / amber) — */
+  --coral: #c24729;
+  --coral-deep: #97361d;
+  --coral-soft: #fbe6df;
+  --amber: #f2a24e;
+
+  /* — Semantic, mode-shifting (the signature) — */
+  --canvas: var(--paper);
+  --canvas-raised: var(--paper-raised);
+  --accent: var(--teal);
+  --accent-deep: var(--teal-deep);
+  --accent-soft: var(--teal-soft);
+  --status: var(--teal);
+  --glow: 28, 140, 125; /* rgb of the live accent, for soft glows */
+  --on-accent: #f7faf9;
+
+  /* — Motion curves (mirror lib/motion.ts) — */
+  --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-calm: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-press: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+[data-mode="crisis"] {
+  --canvas: #f8f1ea; /* warmer paper */
+  --canvas-raised: #fdf7f1;
+  --accent: var(--coral);
+  --accent-deep: var(--coral-deep);
+  --accent-soft: var(--coral-soft);
+  --status: var(--coral);
+  --glow: 226, 92, 61;
+  --on-accent: #fff7f4;
+}
+
+/* Tailwind token bridge — `inline` keeps the var reference so utilities react
+   to the mode shift at runtime (e.g. bg-canvas, text-accent). */
+@theme inline {
+  --color-paper: var(--paper);
+  --color-paper-raised: var(--paper-raised);
+  --color-paper-sunken: var(--paper-sunken);
+  --color-canvas: var(--canvas);
+  --color-canvas-raised: var(--canvas-raised);
+
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-hairline: var(--hairline);
+  --color-hairline-strong: var(--hairline-strong);
+
+  --color-teal: var(--teal);
+  --color-teal-deep: var(--teal-deep);
+  --color-teal-soft: var(--teal-soft);
+  --color-coral: var(--coral);
+  --color-coral-deep: var(--coral-deep);
+  --color-coral-soft: var(--coral-soft);
+  --color-amber: var(--amber);
+
+  --color-accent: var(--accent);
+  --color-accent-deep: var(--accent-deep);
+  --color-accent-soft: var(--accent-soft);
+  --color-status: var(--status);
+  --color-on-accent: var(--on-accent);
+
+  --font-display: var(--font-clash), ui-sans-serif, system-ui, sans-serif;
+  --font-sans: var(--font-general), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, monospace;
+
+  --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-calm: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-press: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  --radius-md: 0.875rem;
+  --radius-lg: 1.25rem;
+  --radius-xl: 1.75rem;
+  --radius-pill: 999px;
+}
+
+/* ============================================================================
+   Base
+============================================================================ */
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    background-color: var(--canvas);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-feature-settings: "ss01", "cv01";
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    transition:
+      background-color 0.7s var(--ease-calm),
+      color 0.7s var(--ease-calm);
+  }
+
+  ::selection {
+    background: var(--accent-soft);
+    color: var(--accent-deep);
+  }
+
+  :focus-visible {
+    outline: 2.5px solid var(--accent);
+    outline-offset: 3px;
+    border-radius: 3px;
+  }
+
+  /* The mode shift animates color tokens app-wide for elements opting in. */
+  .mode-shift {
+    transition:
+      background-color 0.7s var(--ease-calm),
+      border-color 0.7s var(--ease-calm),
+      color 0.7s var(--ease-calm),
+      box-shadow 0.7s var(--ease-calm);
+  }
+}
+
+/* ============================================================================
+   Type scale — Clash Display (display) / General Sans (body) / Plex Mono (data)
+   Prefixed `t-` to avoid colliding with generated Tailwind utilities.
+============================================================================ */
+@layer components {
+  .t-eyebrow {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    font-weight: 500;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    line-height: 1;
+  }
+
+  .t-hero {
+    font-family: var(--font-display);
+    font-weight: 560;
+    font-size: clamp(2.15rem, 6.6vw, 5.75rem);
+    line-height: 0.97;
+    letter-spacing: -0.03em;
+    text-wrap: balance;
+    overflow-wrap: break-word;
+  }
+
+  .t-display {
+    font-family: var(--font-display);
+    font-weight: 540;
+    font-size: clamp(2.1rem, 4.8vw, 3.85rem);
+    line-height: 1.02;
+    letter-spacing: -0.022em;
+  }
+
+  .t-title {
+    font-family: var(--font-display);
+    font-weight: 520;
+    font-size: clamp(1.4rem, 2.4vw, 1.95rem);
+    line-height: 1.12;
+    letter-spacing: -0.014em;
+  }
+
+  .t-lead {
+    font-family: var(--font-sans);
+    font-weight: 400;
+    font-size: clamp(1.1rem, 1.5vw, 1.4rem);
+    line-height: 1.5;
+    color: var(--ink-2);
+  }
+
+  .t-body {
+    font-family: var(--font-sans);
+    font-size: 1.0625rem;
+    line-height: 1.62;
+    color: var(--ink-2);
+  }
+
+  .t-mono {
+    font-family: var(--font-mono);
+    font-size: 0.8125rem;
+    letter-spacing: 0.01em;
+  }
+}
+
+/* ============================================================================
+   Texture — fixed film grain, never animated, ignores pointer + a11y tree.
+============================================================================ */
+.grain {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  pointer-events: none;
+  opacity: 0.5;
+  mix-blend-mode: soft-light;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.86' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 180px 180px;
+}
+
+/* Hero entrance — CSS-driven so above-the-fold content paints at first paint
+   (no JS-hydration gate on LCP). Staggered via the --rise-delay var. Reduced
+   motion is handled by the global rule below (duration collapses, `both` fill
+   leaves the element at its final, fully-visible state). */
+@keyframes b-rise {
+  from {
+    opacity: 0;
+    transform: translateY(22px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.rise-in {
+  animation: b-rise 0.55s var(--ease-out-soft) both;
+  animation-delay: var(--rise-delay, 0s);
+  will-change: transform, opacity;
+}
+
+/* Soft ambient glow that tracks the live accent — used behind the hero. */
+.ambient-glow {
+  background: radial-gradient(
+    60% 55% at 50% 38%,
+    rgba(var(--glow), 0.16),
+    transparent 70%
+  );
+  transition: background 0.7s var(--ease-calm);
+}
+
+/* ============================================================================
+   Accessibility — collapse motion, keep the layout intact.
+============================================================================ */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
