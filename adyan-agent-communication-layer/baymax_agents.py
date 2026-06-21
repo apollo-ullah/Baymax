@@ -45,6 +45,7 @@ Env knobs (demo runner / hardening — all optional):
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from uuid import uuid4
@@ -63,10 +64,12 @@ from uagents import Bureau, Context
 from interfaces import (
     OfferView,
     SupplyNeed,
+    approve_release,
     distance_between,
     eta_minutes_for,
     expiry_for,
     get_inventory,
+    order_from_supplier,
     rank_offers,
 )
 from protocol import (
@@ -100,6 +103,9 @@ _NARRATE_STATES = frozenset({
 # Bounded re-plan: how many times we try to re-home a dropped (rejected) leg
 # before giving up and settling what was accepted. Prevents infinite re-propose.
 MAX_REPLAN_ATTEMPTS = int(os.getenv("BAYMAX_MAX_REPLANS", "3"))
+# Seconds to wait for the chat admin's approve/order/reject decision before the
+# watchdog auto-fails the negotiation (prevents AWAITING_APPROVAL zombies).
+APPROVAL_TIMEOUT_S = float(os.getenv("BAYMAX_APPROVAL_TIMEOUT", "300"))
 # For the one-shot Bureau demo/test: exit the process once a negotiation ends.
 EXIT_WHEN_DONE = os.getenv("BAYMAX_EXIT_WHEN_DONE", "").lower() in ("1", "true", "yes")
 
@@ -212,40 +218,182 @@ async def _evaluate(ctx: Context, req_id: str):
     await _step(ctx, neg, NegotiationState.EVALUATING, plan.rationale, narrate=True)
 
     if not plan.allocations:
-        await _step(ctx, neg, NegotiationState.FAILED,
-                    f"No facility can spare {neg['item']}. Shortfall of {neg['need']} unresolved — "
-                    f"escalate to manual procurement.", narrate=True, final=True)
-        neg["done"] = True
-        _maybe_exit(ctx)
+        # No inter-facility trade is possible — offer the external order instead
+        # of failing outright (admin may still order or cancel).
+        await _request_admin_decision(ctx, req_id)
         return
 
     if not plan.fully_covered:
         if len(plan.allocations) > 1:
-            # Multiple facilities pooled but still short: a genuine insufficiency.
-            await _step(ctx, neg, NegotiationState.RE_PLANNING,
-                        f"Pooled spare across {len(plan.allocations)} facilities still cannot meet "
-                        f"{neg['need']} {neg['item']}: best achievable is {plan.total_covered} "
-                        f"({plan.shortfall_remaining} will remain short). Proceeding to settle the "
-                        f"covered amount and flagging the residual shortfall.",
-                        narrate=True)
+            await _step(ctx, neg, NegotiationState.EVALUATING,
+                        f"Pooled spare across {len(plan.allocations)} facilities covers only "
+                        f"{plan.total_covered}/{neg['need']} {neg['item']} "
+                        f"({plan.shortfall_remaining} would remain short).", narrate=True)
         else:
-            # A single offer can't cover the need on its own.
-            await _step(ctx, neg, NegotiationState.RE_PLANNING,
-                        f"No single facility covers {neg['need']} {neg['item']}; composing a split "
-                        f"({plan.total_covered}/{neg['need']} achievable, {plan.shortfall_remaining} would remain).",
-                        narrate=True)
+            await _step(ctx, neg, NegotiationState.EVALUATING,
+                        f"No single facility covers {neg['need']} {neg['item']}; best split "
+                        f"covers {plan.total_covered}/{neg['need']} "
+                        f"({plan.shortfall_remaining} would remain short).", narrate=True)
 
-    # Record the planned legs and commitments, then propose each leg.
+    # Halt for the chat admin's decision (approve trade / order externally / reject)
+    # instead of auto-proposing. resume_after_admin_decision() continues the flow.
+    await _request_admin_decision(ctx, req_id)
+
+
+def find_awaiting_approval(reply_to: str) -> str | None:
+    """Return the request_id of an active negotiation that is AWAITING_APPROVAL
+    for this chat user, or None. Used by FRONT to route a decision reply."""
+    for req_id, neg in NEGOTIATIONS.items():
+        if (neg.get("reply_to") == reply_to and not neg.get("done")
+                and neg.get("state") == NegotiationState.AWAITING_APPROVAL):
+            return req_id
+    return None
+
+
+async def _request_admin_decision(ctx: Context, req_id: str):
+    """Halt the negotiation and ask the chat admin to decide: approve the trade,
+    order externally, or reject. Arms the approval watchdog (see offer_timeout)."""
+    neg = NEGOTIATIONS[req_id]
+    neg["approval_deadline"] = time.monotonic() + APPROVAL_TIMEOUT_S
+    neg["decided"] = False
+    plan = neg.get("plan")
+    if plan and plan.allocations:
+        from settlement import _amount_for_total  # lazy: avoids import cycle
+
+        cost = _amount_for_total(plan.total_covered)
+        legs = "; ".join(f"{a.quantity} from {a.offerer}" for a in plan.allocations)
+        detail = (
+            f"Decision needed. Best inter-facility trade: {legs} "
+            f"(covers {plan.total_covered}/{neg['need']} {neg['item']}, ~{cost} FET). "
+            f"Reply `approve` to authorize the trade, `order` to purchase "
+            f"{neg['need']} {neg['item']} from an external supplier instead, or "
+            f"`reject` to cancel."
+        )
+    else:
+        detail = (
+            f"No facility can spare {neg['item']} (need {neg['need']}). "
+            f"Reply `order` to purchase from an external supplier, or `reject` to cancel."
+        )
+    await _step(ctx, neg, NegotiationState.AWAITING_APPROVAL, detail, narrate=True)
+
+
+async def resume_after_admin_decision(ctx: Context, req_id: str, decision: str) -> None:
+    """Continue a halted negotiation per the chat admin's decision.
+
+    decision in {"approve", "order", "reject"}. Idempotent via neg["decided"]."""
+    neg = NEGOTIATIONS.get(req_id)
+    if not neg or neg.get("done") or neg.get("decided"):
+        return
+    if neg.get("state") != NegotiationState.AWAITING_APPROVAL:
+        return
+    plan = neg.get("plan")
+    has_trade = bool(plan and plan.allocations)
+
+    if decision == "order":
+        neg["decided"] = True
+        await _order_path(ctx, req_id)
+        return
+    if decision == "reject":
+        neg["decided"] = True
+        await _step(ctx, neg, NegotiationState.FAILED,
+                    f"Admin rejected the resolution for {neg['need']} {neg['item']}. "
+                    f"Shortfall unresolved — no transfer or order placed.",
+                    narrate=True, final=True)
+        neg["done"] = True
+        _maybe_exit(ctx)
+        return
+    # decision == "approve"
+    if not has_trade:
+        # Nothing to approve; keep waiting for order/reject (do not consume).
+        await _step(ctx, neg, NegotiationState.AWAITING_APPROVAL,
+                    "There is no inter-facility trade to approve. Reply `order` to "
+                    "purchase externally, or `reject` to cancel.", narrate=True)
+        return
+    neg["decided"] = True
+    await _begin_trade(ctx, req_id)
+
+
+async def _begin_trade(ctx: Context, req_id: str):
+    """Propose the approved plan's legs (the proposing loop lifted out of the old
+    _evaluate, now gated behind admin approval)."""
+    neg = NEGOTIATIONS[req_id]
+    plan = neg["plan"]
     neg["committed"] = {}
     neg["leg"] = {}
     neg["pending"] = set()
     n = len(plan.allocations)
     await _step(ctx, neg, NegotiationState.PROPOSING,
-                f"Composing transfer: {n} leg(s).", narrate=True)
+                f"Admin approved. Composing transfer: {n} leg(s).", narrate=True)
     for i, al in enumerate(plan.allocations):
         pid = f"{req_id}-{i}"
         await _propose_leg(ctx, neg, req_id, pid, al.offerer, al.quantity, al.eta_minutes,
                            leg_index=i, leg_count=n)
+
+
+async def _order_path(ctx: Context, req_id: str):
+    """Place an external-supplier order for the full need and settle it in FET."""
+    neg = NEGOTIATIONS[req_id]
+    await _step(ctx, neg, NegotiationState.ORDERING,
+                f"Ordering {neg['need']} {neg['item']} from an external supplier…",
+                narrate=True)
+    try:
+        # SYNC seam off the event loop (Browserbase/Playwright or mock).
+        order = await asyncio.to_thread(
+            order_from_supplier, neg["item"], neg["need"], hospital=neg["requester"],
+        )
+    except Exception as exc:  # noqa: BLE001 — never crash the handler
+        await _step(ctx, neg, NegotiationState.FAILED,
+                    f"External order failed ({exc}). Shortfall unresolved.",
+                    narrate=True, final=True)
+        neg["done"] = True
+        _maybe_exit(ctx)
+        return
+
+    neg["order"] = order
+    quote = (f", vendor quote {order.total_price} {order.currency}"
+             if order.total_price else "")
+    view = f" View: {order.live_view_url}" if order.live_view_url else ""
+    prepared = (f"Order prepared with {order.vendor}: {order.quantity} {order.item}"
+                f"{quote} (ref {order.confirmation_ref}).{view}")
+    await _step(ctx, neg, NegotiationState.ORDERING, prepared, narrate=True)
+
+    ref = await _settle_order(ctx, req_id, order)
+    if _ORDER_SETTLEMENT_HOOK is not None and neg.get("reply_to"):
+        from settlement import _amount_for_total  # lazy
+
+        amount = _amount_for_total(order.quantity)
+        neg["awaiting_payment"] = True
+        await _step(ctx, neg, NegotiationState.ORDERING,
+                    f"Approve **{amount} FET** on testnet to finalize the order "
+                    f"(ref {ref}). Open your wallet in ASI:One if no prompt appears.",
+                    narrate=True)
+        return
+    await _step(ctx, neg, NegotiationState.ORDERED,
+                f"{prepared} Settlement: {ref}.", narrate=True, final=True)
+    neg["done"] = True
+    _maybe_exit(ctx)
+
+
+async def start_order(ctx: Context, item: str, quantity: int | None, *,
+                      requester: str = REQUESTER, reply_to: str | None = None) -> str:
+    """Proactively place an external order WITHOUT a negotiation (restock / plan-
+    ahead). Bypasses the shortfall guard in start_negotiation. Returns request_id."""
+    if quantity is None or quantity <= 0:
+        inv = get_inventory(requester, item)
+        quantity = inv.shortfall if inv.shortfall > 0 else int(
+            os.getenv("BAYMAX_DEFAULT_ORDER_QTY", "100"))
+    req_id = uuid4().hex[:8]
+    NEGOTIATIONS[req_id] = {
+        "item": item, "requester": requester, "need": int(quantity),
+        "offers": {}, "expected": set(), "plan": None, "pending": set(),
+        "accepts": set(), "rejects": set(), "deadline": time.monotonic(),
+        "done": False, "reply_to": reply_to, "state": NegotiationState.ORDERING,
+        "evaluated": True, "settled": True, "decided": True, "committed": {},
+        "leg": {}, "rejected_facilities": set(), "replans": 0, "covered": 0,
+        "order": None,
+    }
+    await _order_path(ctx, req_id)
+    return req_id
 
 
 async def _propose_leg(ctx: Context, neg: dict, req_id: str, pid: str,
@@ -504,6 +652,71 @@ async def settle_transfer(ctx: Context, req_id: str, plan) -> str:
     return ref
 
 
+# --- Order settlement hook (Wave 3) ----------------------------------------
+# Parallel to _SETTLEMENT_HOOK: run_front registers
+# settlement.settle_order_via_payment_protocol so an external order settles via
+# the Payment Protocol (FET) to a supplier wallet. Stub when unregistered.
+_ORDER_SETTLEMENT_HOOK = None
+
+
+def register_order_settlement_hook(fn) -> None:
+    """Register the real order settlement handler.
+    fn: async fn(ctx, req_id, order, user_address, reply_to) -> str."""
+    global _ORDER_SETTLEMENT_HOOK
+    _ORDER_SETTLEMENT_HOOK = fn
+
+
+async def _settle_order(ctx: Context, req_id: str, order) -> str:
+    neg = NEGOTIATIONS.get(req_id, {})
+    user_address = neg.get("reply_to")
+    if _ORDER_SETTLEMENT_HOOK is not None and user_address:
+        return await _ORDER_SETTLEMENT_HOOK(
+            ctx, req_id, order, user_address=user_address, reply_to=user_address,
+        )
+    ref = f"stub-order-{req_id}"
+    ctx.logger.info(
+        f"[order-settlement-stub] Prepared order {order.confirmation_ref} on "
+        f"{os.getenv('FETCH_NETWORK', 'testnet')} -> {ref} (no hook / no chat user)."
+    )
+    return ref
+
+
+async def finalize_order_after_payment(
+    ctx: Context, req_id: str, settlement_ref: str, *, tx_id: str | None = None,
+) -> None:
+    """Terminal ORDERED milestone after the order's FET payment succeeds."""
+    neg = NEGOTIATIONS.get(req_id)
+    if not neg or neg.get("done"):
+        return
+    order = neg.get("order")
+    tx_note = f" On-chain tx: `{tx_id}`." if tx_id else ""
+    quote = (f", vendor quote {order.total_price} {order.currency}"
+             if order and order.total_price else "")
+    detail = (
+        f"External order confirmed with {getattr(order, 'vendor', 'supplier')}: "
+        f"{getattr(order, 'quantity', neg['need'])} {neg['item']}{quote} "
+        f"(ref {getattr(order, 'confirmation_ref', '?')}). "
+        f"Settlement: {settlement_ref}.{tx_note}"
+    )
+    await _step(ctx, neg, NegotiationState.ORDERED, detail, narrate=True, final=True)
+    neg["awaiting_payment"] = False
+    neg["done"] = True
+    _maybe_exit(ctx)
+
+
+async def fail_order_after_payment(ctx: Context, req_id: str, reason: str) -> None:
+    """Close the chat when the order's FET settlement cannot be verified."""
+    neg = NEGOTIATIONS.get(req_id)
+    if not neg or neg.get("done"):
+        return
+    await _step(ctx, neg, NegotiationState.FAILED,
+                f"External order prepared but FET settlement could not be verified "
+                f"({reason}).", narrate=True, final=True)
+    neg["awaiting_payment"] = False
+    neg["done"] = True
+    _maybe_exit(ctx)
+
+
 def attach_front_handlers(front):
     """Wire the requester (Hospital A) message handlers + offer-timeout tick."""
 
@@ -584,13 +797,23 @@ def attach_front_handlers(front):
         all-offers-arrived path."""
         nowt = time.monotonic()
         for req_id, neg in list(NEGOTIATIONS.items()):
-            if neg["done"] or neg["evaluated"]:
+            if neg["done"]:
                 continue
-            if neg["state"] == NegotiationState.COLLECTING_OFFERS and nowt >= neg["deadline"]:
+            state = neg["state"]
+            if (state == NegotiationState.COLLECTING_OFFERS and not neg["evaluated"]
+                    and nowt >= neg["deadline"]):
                 await _step(ctx, neg, NegotiationState.COLLECTING_OFFERS,
                             f"Offer window closed: {len(neg['offers'])}/{len(neg['expected'])} "
                             f"responded. Evaluating with what arrived.", narrate=True)
                 await _evaluate(ctx, req_id)
+            elif (state == NegotiationState.AWAITING_APPROVAL
+                  and nowt >= neg.get("approval_deadline", float("inf"))):
+                await _step(ctx, neg, NegotiationState.FAILED,
+                            f"No admin decision within {APPROVAL_TIMEOUT_S:.0f}s — "
+                            f"timed out. No transfer or order placed.",
+                            narrate=True, final=True)
+                neg["done"] = True
+                _maybe_exit(ctx)
 
 
 # ---------------------------------------------------------------------------
@@ -643,6 +866,13 @@ def attach_hospital_handlers(agent, facility: str):
 
         inv = get_inventory(facility, msg.item)
         if inv.spare_capacity >= msg.quantity:
+            if not approve_release(facility, msg.item, msg.quantity):
+                ctx.logger.info(f"[{facility}] Facility admin withheld approval for "
+                                f"leg {msg.proposal_id}.")
+                await ctx.send(sender, TransferReject(
+                    request_id=msg.request_id, proposal_id=msg.proposal_id,
+                    rejected_by=facility, reason="facility admin withheld approval"))
+                return
             ctx.logger.info(f"[{facility}] Accepting leg {msg.leg_index + 1}/{msg.leg_count}: "
                             f"{msg.quantity} {msg.item} -> {msg.to_facility}.")
             await ctx.send(sender, TransferAccept(request_id=msg.request_id,
