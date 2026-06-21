@@ -26,7 +26,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from ..shared import redis_io
 from . import state
 from .inventory_seam import detect_shortage, make_shortage
-from .poke_client import notify
+from .imessage_client import notify
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)

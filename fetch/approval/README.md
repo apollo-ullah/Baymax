@@ -1,15 +1,20 @@
-# Approval service — Hospital A ↔ Hospital B over Poke
+# Approval service — Hospital A ↔ Hospital B over iMessage
 
 Human-in-the-loop transfer approvals. When Hospital A is short on an item that
-Hospital B can spare, the doctor at A is texted (via Poke) with **tappable
+Hospital B can spare, the doctor at A is texted (via iMessage) with **tappable
 Accept/Reject links**; on accept, the doctor at B is texted to approve or deny.
 On B-accept the transfer is logged to Redis (and shows on the dashboard); on
 B-deny we notify A and publish an `approval_b_denied` event — the **Browserbase
 "buy" fallback is a separate (partner) step** that attaches to that event.
 
-Why links instead of replies: Poke's reliable mode is **outbound**; replies go to
-Poke's own AI, not our backend. Tappable links hit our endpoints directly, so the
-decision is deterministic.
+Texts are sent by driving **Messages.app via AppleScript** (`osascript`) — see
+`imessage_client.py`. (This replaced the Poke inbound API, which silently stopped
+delivering: it returns `success:true` but no message arrives.)
+
+Why links instead of replies: outbound iMessage is reliable and deterministic;
+tappable links hit our FastAPI endpoints directly, so the decision needs no
+reply-parsing. Requires macOS with Messages.app signed into an iMessage account;
+texts send from this Mac's Apple ID.
 
 ## Run (from repo root)
 
@@ -20,8 +25,8 @@ uvicorn fetch.approval.service:app --port 8080
 
 ## Try it (no phone needed)
 
-With **no Poke key**, every message + its action links are printed to the logs,
-so you can drive the whole flow from a browser/curl:
+With **no recipient configured**, every message + its action links are printed to
+the logs, so you can drive the whole flow from a browser/curl:
 
 ```bash
 curl -XPOST localhost:8080/shortage          # -> request_id; logs Dr A's links
@@ -29,8 +34,13 @@ curl -XPOST localhost:8080/shortage          # -> request_id; logs Dr A's links
 # open the "b/accept" link                      -> transfer logged to Redis
 ```
 
-With a **Poke key** set (`POKE_API_KEY`, or per-hospital
-`POKE_API_KEY_HOSPITAL_A` / `_B`), the same messages are delivered as real texts.
+With a per-hospital recipient set (`IMESSAGE_TO_HOSPITAL_A` / `_B`, or shared
+`IMESSAGE_TO`), the same messages are delivered as real iMessages. Smoke-test the
+transport directly:
+
+```bash
+python -m fetch.approval.imessage_client hospital_a "Stockpile test ✅"
+```
 
 ## Endpoints
 
@@ -46,8 +56,8 @@ With a **Poke key** set (`POKE_API_KEY`, or per-hospital
 
 ## Env
 
-- `POKE_API_KEY` — recipient (shared fallback).
-- `POKE_API_KEY_HOSPITAL_A` / `_B` — optional per-doctor keys (two-phone demo).
+- `IMESSAGE_TO_HOSPITAL_A` / `_B` — phone number (or Apple ID email) to text per hospital.
+- `IMESSAGE_TO` — optional shared recipient fallback (single-phone demos).
 - `APPROVAL_BASE_URL` — base for the action links (default `http://localhost:8080`).
 
 Detection reads the Redis track's inventory/surplus; with no seeded Redis it
