@@ -31,7 +31,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" data-mode="calm" className={`${fontVariables} h-full`}>
+    <html lang="en" data-mode="calm" data-scroll-behavior="smooth" suppressHydrationWarning className={`${fontVariables} h-full`}>
       <body className="min-h-full flex flex-col bg-canvas text-ink">
         <CrisisModeProvider initial="calm">{children}</CrisisModeProvider>
         <div className="grain" aria-hidden="true" />

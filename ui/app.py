@@ -449,6 +449,62 @@ def api_capture():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+@app.route("/api/scan", methods=["POST"])
+def api_scan():
+    """Run Claude Vision on a browser-captured frame (the web 'Scan inventory' button).
+
+    Body (JSON): { image_b64 (data URL or raw base64 JPEG), hospital_id?, item? }
+    The browser owns the live webcam; this only analyses the uploaded still, so there is
+    no camera contention with getUserMedia. Reuses capture_single.py --image, which runs
+    Claude Vision and writes vision:image + inventory to Redis. Returns the parsed count.
+    """
+    import base64 as _b64, re as _re, tempfile as _tmp
+    data = request.get_json(silent=True) or {}
+    hospital_id = data.get("hospital_id") or HOSPITAL_ID
+    item = data.get("item") or os.getenv("BAYMAX_ITEM", "Saline")
+    image_b64 = data.get("image_b64") or ""
+    if "," in image_b64:                      # strip "data:image/jpeg;base64," prefix
+        image_b64 = image_b64.split(",", 1)[1]
+    if not image_b64:
+        return jsonify({"ok": False, "error": "missing image_b64"}), 400
+    try:
+        raw = _b64.b64decode(image_b64)
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"bad base64: {e}"}), 400
+
+    fd, tmp = _tmp.mkstemp(suffix=".jpg", prefix="scan_", dir=str(HARDWARE_DIR))
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(raw)
+        env = {**os.environ, "HOSPITAL_ID": hospital_id, "ITEM": item,
+               "REDIS_URL": os.getenv("REDIS_URL", "redis://localhost:6379"),
+               "BAYMAX_VISION_DEMO": os.getenv("BAYMAX_VISION_DEMO", "1")}
+        cmd = [sys.executable, str(CAPTURE_SINGLE_SCRIPT), "--image", tmp]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60,
+                                cwd=str(HARDWARE_DIR), env=env)
+        output = result.stdout + result.stderr
+        if result.returncode != 0:
+            return jsonify({"ok": False, "error": output}), 500
+        m = _re.search(r"qty=(\d+)\s+pct=([\d.]+)\s+status=(\w+)\s+surplus=(\d+)", output)
+        dm = _re.search(r"Detected:\s*\d+\s+\S+\s*[—-]\s*(.+)", output)
+        return jsonify({
+            "ok": True, "hospital_id": hospital_id, "item": item,
+            "count": int(m.group(1)) if m else None,
+            "status": m.group(3) if m else None,
+            "surplus": int(m.group(4)) if m else None,
+            "note": dm.group(1).strip() if dm else "",
+        })
+    except subprocess.TimeoutExpired:
+        return jsonify({"ok": False, "error": "Vision scan timed out (60s)"}), 500
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
 @app.route("/api/capture_request", methods=["POST"])
 def api_capture_request():
     """
