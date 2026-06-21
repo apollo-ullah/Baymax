@@ -23,6 +23,9 @@ from __future__ import annotations
 import os
 
 os.environ.setdefault("STOCKPILE_OFFER_TIMEOUT", "30")
+# Read this facility's spare from the live Redis backend (tracks/redis); falls
+# back to the mock if Redis is unreachable. Override with STOCKPILE_REDIS=0.
+os.environ.setdefault("STOCKPILE_REDIS", "1")
 
 # Import agent_base FIRST so the event-loop workaround is installed before ANY
 # Agent is constructed. stockpile_agents also imports agent_base, but we name it

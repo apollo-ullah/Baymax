@@ -54,6 +54,11 @@ import os
 os.environ.setdefault("STOCKPILE_OFFER_TIMEOUT", "30")
 os.environ.setdefault("STOCKPILE_SPARSE_NARRATION", "1")
 
+# Use the live Redis inventory backend (tracks/redis) for the real demo. Safe by
+# default: redis_inventory.py falls back to the deterministic mock if Redis is
+# unreachable, so this never breaks the live run. Override with STOCKPILE_REDIS=0.
+os.environ.setdefault("STOCKPILE_REDIS", "1")
+
 # Import agent_base FIRST so the Python 3.14 event-loop workaround is installed
 # before ANY Agent is constructed. front_agent and settlement both import it too,
 # but we name it explicitly to make the ordering contract obvious.
