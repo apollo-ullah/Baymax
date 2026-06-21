@@ -6,18 +6,18 @@ Run from inside tracks/redis with:
 
 import json
 
-from redis.src.redis_client import ping_redis
-from redis.src.seed_demo_data import (
+from redis_client import ping_redis
+from seed_demo_data import (
     seed_forecast,
     seed_hospital_meta,
     seed_inventory,
     seed_surplus,
 )
-from redis.src.inventory import get_inventory
-from redis.src.forecast import get_forecast
-from redis.src.alerts import detect_shortfall_and_publish
-from redis.src.transfers import get_recent_transfers, log_transfer
-from redis.src.vector_history import find_similar_periods, seed_history
+from inventory import get_inventory
+from forecast import get_forecast
+from alerts import detect_shortfall_and_publish
+from transfers import get_recent_transfers, log_transfer
+from vector_history import find_similar_periods, seed_history
 
 
 def section(title):

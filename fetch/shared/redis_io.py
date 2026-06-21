@@ -1,18 +1,18 @@
 """
-Bridge to the Redis track (tracks/redis).
+Bridge to the Redis track (redis/).
 
 The Redis track owns the schema, the connection client, and the read/write
 helpers. Its modules use flat imports (e.g. `from redis_client import get_redis`),
 so we add its `src/` dir to sys.path and re-export the helpers our agents need.
-The single source of truth for Redis stays in tracks/redis — we do not redefine
-keys or connections here.
+The single source of truth for Redis stays in redis/ — we do not redefine keys
+or connections here.
 """
 
 import sys
 from pathlib import Path
 
-# tracks/fetch/shared/redis_io.py  ->  parents[3] == repo root
-_REDIS_SRC = Path(__file__).resolve().parents[3] / "tracks" / "redis" / "src"
+# fetch/shared/redis_io.py  ->  parents[2] == repo root
+_REDIS_SRC = Path(__file__).resolve().parents[2] / "redis" / "src"
 if str(_REDIS_SRC) not in sys.path:
     sys.path.insert(0, str(_REDIS_SRC))
 
@@ -24,12 +24,11 @@ __all__ = ["get_redis", "ping_redis", "get_forecast", "write_forecast",
 
 
 def upsert_forecast_items(region: str, new_items: dict) -> dict:
-    """Merge demand signals into forecast:{region} without clobbering what
-    another agent already wrote.
+    """Merge signals into forecast:{region} without clobbering what another
+    agent already wrote: read current items, merge ours in, write the union back.
 
-    The Redis track's write_forecast() overwrites the whole key, but the weather
-    and illness agents each only own part of the forecast. So we read the current
-    forecast, merge our items in, and write the union back.
+    (write_forecast overwrites the whole key, but the weather and illness agents
+    each only own part of the forecast.)
     """
     existing = get_forecast(region) or {}
     items = dict(existing.get("items", {}))

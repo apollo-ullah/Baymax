@@ -6,8 +6,8 @@ For now this only seeds hospital metadata (no inventory yet).
 import json
 from datetime import datetime, timezone
 
-from redis.src.redis_client import get_redis
-from redis.src.schema import forecast_key, inventory_key, meta_key, surplus_key
+from redis_client import get_redis
+from schema import forecast_key, inventory_key, meta_key, surplus_key
 
 HOSPITALS = {
     "hospital_a": {

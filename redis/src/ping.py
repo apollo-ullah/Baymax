@@ -1,6 +1,6 @@
 """Simple CLI to check Redis connectivity."""
 
-from redis.src.redis_client import ping_redis
+from redis_client import ping_redis
 
 
 def main() -> None:

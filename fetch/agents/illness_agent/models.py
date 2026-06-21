@@ -1,8 +1,8 @@
 """
-Shared message schema for the illness (CDC/WHO) agent.
+Shared message schema for the illness agent.
 
-The intelligence agent imports IllnessUpdate to receive illness-activity
-signals that feed demand forecasting.
+The intelligence agent imports IllnessUpdate to receive illness levels and map
+each illness -> inventory items.
 """
 
 from uagents import Model
@@ -10,7 +10,5 @@ from uagents import Model
 
 class IllnessUpdate(Model):
     region: str
-    influenza: str   # one of: Minimal | Low | Moderate | High | Very High
-    covid: str
-    rsv: str
-    source: str
+    # illness name -> level, e.g. {"influenza": "High", "covid": "Moderate"}
+    illnesses: dict

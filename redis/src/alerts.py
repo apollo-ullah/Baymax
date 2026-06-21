@@ -3,10 +3,10 @@
 import json
 from datetime import datetime, timezone
 
-from redis.src.redis_client import get_redis
-from redis.src.inventory import get_inventory
-from redis.src.forecast import get_forecast
-from redis.src.schema import ALERTS_CHANNEL, ALERTS_STREAM
+from redis_client import get_redis
+from inventory import get_inventory
+from forecast import get_forecast
+from schema import ALERTS_CHANNEL, ALERTS_STREAM
 
 
 def detect_shortfall_and_publish(hospital_id, region):

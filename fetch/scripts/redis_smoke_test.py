@@ -2,7 +2,7 @@
 Smoke test: confirm the Fetch track is wired to the Redis track.
 
 Run from the repo root:
-    python -m tracks.fetch.scripts.redis_smoke_test
+    python -m fetch.scripts.redis_smoke_test
 
 It (1) pings Redis, (2) writes a weather slice and an illness slice into
 forecast:{region}, and (3) reads the key back to prove both signals coexist —

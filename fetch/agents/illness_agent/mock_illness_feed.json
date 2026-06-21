@@ -1,0 +1,9 @@
+{
+  "source": "MOCK illness feed (not live) — FR10 demo data",
+  "scale": ["Minimal", "Low", "Moderate", "High", "Very High"],
+  "regions": {
+    "san_francisco": { "influenza": "Very High", "covid": "Moderate", "rsv": "Low" },
+    "los_angeles":   { "influenza": "High",      "covid": "High",     "rsv": "Moderate" },
+    "sacramento":    { "influenza": "Moderate",  "covid": "Low",      "rsv": "Low" }
+  }
+}

@@ -3,8 +3,8 @@
 import json
 from datetime import datetime, timezone
 
-from redis.src.redis_client import get_redis
-from redis.src.schema import EVENTS_CHANNEL, forecast_key
+from redis_client import get_redis
+from schema import EVENTS_CHANNEL, forecast_key
 
 
 def write_forecast(region, forecast_data):

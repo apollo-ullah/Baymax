@@ -4,8 +4,8 @@ import json
 import uuid
 from datetime import datetime, timezone
 
-from redis.src.redis_client import get_redis
-from redis.src.schema import EVENTS_CHANNEL, TRANSFERS_STREAM
+from redis_client import get_redis
+from schema import EVENTS_CHANNEL, TRANSFERS_STREAM
 
 
 def _ensure_fields(transfer):

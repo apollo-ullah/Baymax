@@ -1,14 +1,13 @@
 """
 Illness Agent (MVP) — FR10, forecast inputs (workstream B).
 
-Serves a MOCKED CDC/WHO illness-activity feed (NOT live; the live scrape is
-FR16, P2). On an interval it reads the regional illness activity and logs it.
-Next it feeds the forecast: writes to forecast:{region} via the Redis track
-helper (tracks/redis/src/forecast.write_forecast) and/or sends IllnessUpdate to
-the intelligence agent that reasons over demand.
+Posts current illness activity to forecast:{region} as a simple {illness -> level}
+map (e.g. {"influenza": "High", "covid": "Moderate"}), read from a mocked feed.
 
-Together with the weather agent, this populates the demand side of shortfall
-detection (FR3: falling stock AND rising forecast demand).
+No weather/temperature here. A separate intelligence agent reads BOTH the weather
+and the illness signals from Redis and reasons over trends (e.g. deriving demand
+or heat risk). Adding an illness = adding an entry to mock_illness_feed.json.
+Levels use the scale: Minimal | Low | Moderate | High | Very High.
 """
 
 import json
@@ -26,7 +25,7 @@ load_dotenv()  # read the project-root .env
 REGION = os.getenv("FORECAST_REGION", "san_francisco")
 
 # Mocked feed lives next to this file.
-_FEED_PATH = os.path.join(os.path.dirname(__file__), "mock_cdc_feed.json")
+_FEED_PATH = os.path.join(os.path.dirname(__file__), "mock_illness_feed.json")
 
 agent = Agent(
     name="illness_agent",
@@ -36,42 +35,31 @@ agent = Agent(
 )
 
 
-def fetch_illness(region: str) -> dict:
-    """Read the mocked CDC/WHO feed and return activity for one region."""
+def fetch_illnesses(region: str) -> dict:
+    """Return {illness -> level} for the region from the mocked feed."""
     with open(_FEED_PATH) as f:
         feed = json.load(f)
-    activity = feed["regions"].get(region, {})
-    return {
-        "region": region,
-        "influenza": activity.get("influenza", "Minimal"),
-        "covid": activity.get("covid", "Minimal"),
-        "rsv": activity.get("rsv", "Minimal"),
-        "source": feed["source"],
-    }
+    return feed.get("regions", {}).get(region, {})
 
 
 @agent.on_interval(period=60.0)
 async def poll_illness(ctx: Context):
-    """Every 60s, read the mocked illness feed and write it to forecast:{region}."""
+    """Every 60s, read illness levels and write them to forecast:{region}."""
     try:
-        illness = fetch_illness(REGION)
-        ctx.logger.info(f"Illness activity ({REGION}): {illness}")
+        illnesses = fetch_illnesses(REGION)
+        ctx.logger.info(f"Illness activity ({REGION}): {illnesses}")
     except Exception as e:
         ctx.logger.error(f"Failed to read illness feed: {e}")
         return
 
-    # Merge our slice into forecast:{region} alongside the weather signal.
+    # Merge the illness map into forecast:{region} alongside the weather signal.
     try:
-        redis_io.upsert_forecast_items(REGION, {
-            "illness_influenza": illness["influenza"],
-            "illness_covid": illness["covid"],
-            "illness_rsv": illness["rsv"],
-        })
+        redis_io.upsert_forecast_items(REGION, {"illness": illnesses})
         ctx.logger.info(f"Wrote illness signal to forecast:{REGION}")
     except Exception as e:
         ctx.logger.error(f"Redis write failed (forecast:{REGION}): {e}")
 
-    # TODO: ctx.send(INTELLIGENCE_AGENT_ADDRESS, IllnessUpdate(**illness))
+    # TODO: ctx.send(INTELLIGENCE_AGENT_ADDRESS, IllnessUpdate(region=REGION, illnesses=illnesses))
 
 
 if __name__ == "__main__":

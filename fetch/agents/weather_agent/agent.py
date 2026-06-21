@@ -3,9 +3,8 @@ Weather Agent (MVP) — FR10, forecast inputs (workstream B).
 
 Pulls current weather from Open-Meteo (no API key needed) on an interval.
 For now it just fetches and logs. Next it feeds the forecast: it writes demand
-signals to forecast:{region} via the Redis track helper
-(tracks/redis/src/forecast.write_forecast) and/or sends WeatherUpdate to the
-intelligence agent that ranks offers.
+signals to forecast:{region} via the Redis bridge (fetch/shared/redis_io.py)
+and/or sends WeatherUpdate to the intelligence agent that ranks offers.
 """
 
 import os
