@@ -381,6 +381,16 @@ _DECISION_RE = re.compile(
 )
 _ORDER_CMD_RE = re.compile(r"^\s*order\b", re.IGNORECASE)
 
+# ASI:One prepends an "@agent1<bech32>" mention to replies sent to an agent
+# (e.g. "@agent1qw7f32... approve"), which breaks the start-anchored decision
+# regex above. Strip any leading mention(s) before matching.
+_MENTION_RE = re.compile(r"^\s*(?:@?agent1[0-9a-z]{38,}\s+)+", re.IGNORECASE)
+
+
+def _strip_mention(text: str) -> str:
+    """Remove a leading ASI:One '@agent1…' mention prefix, if present."""
+    return _MENTION_RE.sub("", text or "", count=1).strip()
+
 
 def parse_decision(text: str) -> dict:
     """Parse an admin decision reply: approve/reject/order.
@@ -390,7 +400,7 @@ def parse_decision(text: str) -> dict:
       {"kind": "order",    "item": str, "quantity": int|None, "requester": str}
       {"kind": "none"}  -- not a decision; caller falls through to parse_intent
     """
-    text = (text or "").strip()
+    text = _strip_mention(text)
     if not text:
         return {"kind": "none"}
 
