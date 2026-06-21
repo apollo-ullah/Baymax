@@ -1,0 +1,9 @@
+# Hardware / vision track.
+# Camera capture + Claude Vision counting (bottle_counter.py):
+anthropic
+opencv-python
+python-dotenv
+
+# Pushing detected counts into the Stockpile Redis (sync_to_redis.py). The
+# --counts / --from-json paths need only this (no anthropic/opencv/API key).
+redis

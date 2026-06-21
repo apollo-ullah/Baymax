@@ -1,0 +1,30 @@
+# --- Secrets & local identity (NEVER commit) ---
+.env
+.env.local
+.env.*.local
+private_keys.json
+*.key
+*.pem
+*_seed.txt
+
+# --- uAgents local state / keystores ---
+agent_storage*.json
+*_agent_data.json
+.uagents/
+
+# --- Python ---
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- OS / editor ---
+.DS_Store
+.idea/
+.vscode/
+*.swp
