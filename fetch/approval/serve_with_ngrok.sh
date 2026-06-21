@@ -22,9 +22,20 @@ cd "$REPO_ROOT"
 # Activate venv if present.
 [ -f .venv/bin/activate ] && source .venv/bin/activate
 
-# Pull NGROK_DOMAIN from .env if not already set in the environment.
-if [ -z "${NGROK_DOMAIN:-}" ] && [ -f .env ]; then
-  NGROK_DOMAIN="$(grep -E '^NGROK_DOMAIN=' .env | head -1 | cut -d= -f2- | tr -d '[:space:]')"
+# Pull NGROK_AUTHTOKEN / NGROK_DOMAIN from .env if not already in the environment.
+_from_env() { grep -E "^$1=" .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '[:space:]'; }
+if [ -f .env ]; then
+  [ -z "${NGROK_AUTHTOKEN:-}" ] && NGROK_AUTHTOKEN="$(_from_env NGROK_AUTHTOKEN)"
+  [ -z "${NGROK_DOMAIN:-}" ] && NGROK_DOMAIN="$(_from_env NGROK_DOMAIN)"
+fi
+
+# ngrok reads NGROK_AUTHTOKEN from the environment natively (no `ngrok config` needed).
+# Export it if we have one; otherwise fall back to a previously saved ngrok config.
+if [ -n "${NGROK_AUTHTOKEN:-}" ]; then
+  export NGROK_AUTHTOKEN
+  echo "▶ using NGROK_AUTHTOKEN from environment/.env"
+else
+  echo "▶ no NGROK_AUTHTOKEN set — relying on saved ngrok config (~/.config/ngrok/ngrok.yml)"
 fi
 
 echo "▶ starting ngrok on port $PORT ${NGROK_DOMAIN:+(domain: $NGROK_DOMAIN)} ..."
