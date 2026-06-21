@@ -1,0 +1,699 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Stockpile Pipeline</title>
+<style>
+  :root {
+    --bg: #0f1117; --surface: #1a1d27; --border: #2a2d3e;
+    --text: #e2e8f0; --muted: #8892a4; --accent: #6366f1;
+    --green: #22c55e; --yellow: #eab308; --red: #ef4444;
+    --orange: #f97316; --blue: #3b82f6; --purple: #a855f7;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'SF Mono', 'Fira Code', monospace; font-size: 13px; }
+
+  /* ── header ── */
+  header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 14px 24px; display: flex; align-items: center; gap: 16px; }
+  header h1 { font-size: 16px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+  .region-badge { background: var(--border); padding: 3px 10px; border-radius: 99px; font-size: 11px; color: var(--muted); }
+  .redis-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--red); transition: background .3s; }
+  .redis-dot.ok { background: var(--green); }
+  header .right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+  .ts { color: var(--muted); font-size: 11px; }
+
+  /* ── pipeline bar ── */
+  .pipeline { display: flex; align-items: center; gap: 0; background: var(--surface); border-bottom: 1px solid var(--border); padding: 10px 24px; overflow-x: auto; }
+  .stage { display: flex; align-items: center; gap: 8px; padding: 4px 14px; border-radius: 6px; white-space: nowrap; }
+  .stage .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
+  .stage.ok .dot { background: var(--green); }
+  .stage.warn .dot { background: var(--yellow); }
+  .stage.err .dot { background: var(--red); }
+  .stage .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  .arrow { color: var(--border); margin: 0 4px; }
+
+  /* ── main grid ── */
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; padding: 18px 24px; }
+
+  /* ── cards ── */
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  .card.span2 { grid-column: span 2; }
+  .card.span3 { grid-column: span 3; }
+  .card-header { padding: 10px 14px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; }
+  .card-header .tag { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; padding: 2px 7px; border-radius: 4px; }
+  .tag-ingestion { background: #1e3a5f; color: #60a5fa; }
+  .tag-who      { background: #1a3a2a; color: #4ade80; }
+  .tag-vision   { background: #3b2a1a; color: #fb923c; }
+  .tag-scenario { background: #2d1a3b; color: #c084fc; }
+  .tag-claude   { background: #3b1a2a; color: #f472b6; }
+  .tag-inventory{ background: #1a2a3b; color: #67e8f9; }
+  .tag-fetch    { background: #2a1a1a; color: #fca5a5; }
+  .tag-alerts   { background: #3b2a0a; color: #fde047; }
+  .card-header .title { font-size: 12px; color: var(--text); }
+  .card-header .source { margin-left: auto; font-size: 10px; color: var(--muted); }
+  .card-body { padding: 12px 14px; }
+
+  /* ── kv rows ── */
+  .kv { display: flex; justify-content: space-between; padding: 3px 0; border-bottom: 1px solid #1f2233; }
+  .kv:last-child { border: none; }
+  .kv .k { color: var(--muted); }
+  .kv .v { color: var(--text); font-weight: 500; }
+  .kv .v.ok     { color: var(--green); }
+  .kv .v.warn   { color: var(--yellow); }
+  .kv .v.low    { color: var(--orange); }
+  .kv .v.critical { color: var(--red); }
+  .kv .v.rising  { color: var(--red); }
+  .kv .v.falling { color: var(--green); }
+  .kv .v.stable  { color: var(--text); }
+  .kv .v.high    { color: var(--red); }
+  .kv .v.medium  { color: var(--yellow); }
+  .kv .v.low-risk { color: var(--green); }
+
+  /* ── vision image ── */
+  .vision-img { width: 100%; max-height: 200px; object-fit: cover; border-radius: 6px; margin-bottom: 10px; background: #111; }
+  .vision-counts { display: flex; gap: 8px; margin-top: 8px; }
+  .hospital-count { flex: 1; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px; text-align: center; }
+  .hospital-count .name { font-size: 10px; color: var(--muted); }
+  .hospital-count .count { font-size: 22px; font-weight: 700; color: var(--accent); margin-top: 2px; }
+  .hospital-count .item { font-size: 10px; color: var(--muted); }
+
+  /* ── reasoning ── */
+  .risk-badge { display: inline-block; padding: 4px 12px; border-radius: 6px; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 10px; }
+  .risk-critical { background: #450a0a; color: #fca5a5; }
+  .risk-high     { background: #431407; color: #fdba74; }
+  .risk-medium   { background: #422006; color: #fde68a; }
+  .risk-low      { background: #052e16; color: #86efac; }
+  .risk-unknown  { background: var(--border); color: var(--muted); }
+  .reasoning-text { color: var(--muted); line-height: 1.5; margin: 8px 0; font-size: 12px; }
+  .priority-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .priority-tag { background: var(--accent); color: #fff; font-size: 11px; padding: 3px 8px; border-radius: 4px; }
+
+  /* ── scenario supplies ── */
+  .supply-list { list-style: none; }
+  .supply-list li { padding: 4px 0; color: var(--text); }
+  .supply-list li::before { content: '→ '; color: var(--purple); }
+
+  /* ── inventory table ── */
+  .inv-grid { display: grid; grid-template-columns: auto repeat(3, 1fr); gap: 1px; background: var(--border); border-radius: 6px; overflow: hidden; font-size: 12px; }
+  .inv-grid .cell { background: var(--surface); padding: 6px 10px; }
+  .inv-grid .cell.header { background: var(--bg); color: var(--muted); font-size: 10px; text-transform: uppercase; }
+  .inv-grid .cell.item-name { color: var(--muted); }
+  .status-ok { color: var(--green); }
+  .status-warn { color: var(--yellow); }
+  .status-low { color: var(--orange); }
+  .status-critical { color: var(--red); }
+
+  /* ── transfers ── */
+  .transfer { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; margin-bottom: 6px; display: flex; align-items: center; gap: 10px; }
+  .transfer .flow { color: var(--text); }
+  .transfer .detail { color: var(--muted); font-size: 11px; margin-left: auto; }
+  .transfer .status-pill { font-size: 10px; padding: 2px 7px; border-radius: 4px; background: #052e16; color: #86efac; }
+
+  /* ── action bar ── */
+  .actions { display: flex; gap: 10px; padding: 0 24px 18px; }
+  button { background: var(--accent); color: #fff; border: none; padding: 9px 18px; border-radius: 7px; font-family: inherit; font-size: 13px; cursor: pointer; transition: opacity .15s; }
+  button:hover { opacity: .85; }
+  button.secondary { background: var(--surface); border: 1px solid var(--border); color: var(--text); }
+  button:disabled { opacity: .4; cursor: default; }
+
+  /* ── empty state ── */
+  .empty { color: var(--muted); font-style: italic; padding: 10px 0; }
+
+  /* ── spinner ── */
+  .spin { display: inline-block; animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── toast ── */
+  #toast { position: fixed; bottom: 24px; right: 24px; background: var(--surface); border: 1px solid var(--border); padding: 12px 18px; border-radius: 8px; font-size: 12px; opacity: 0; transition: opacity .3s; pointer-events: none; max-width: 320px; }
+  #toast.show { opacity: 1; }
+
+  /* ── no-redis banner ── */
+  .no-redis { background: #1a0a0a; border: 1px solid #450a0a; border-radius: 8px; padding: 16px; margin: 18px 24px 0; color: #fca5a5; }
+  .no-redis strong { color: var(--red); }
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<header>
+  <h1>⚕ Stockpile Pipeline</h1>
+  <span class="region-badge">{{ region }}</span>
+  <div class="right">
+    <span class="redis-dot" id="redis-dot"></span>
+    <span id="redis-label" style="font-size:11px;color:var(--muted)">Redis</span>
+    <span class="ts" id="ts">–</span>
+  </div>
+</header>
+
+<!-- Pipeline flow -->
+<div class="pipeline">
+  <div class="stage" id="stage-weather"><span class="dot"></span><span class="label">Weather</span></div>
+  <span class="arrow">→</span>
+  <div class="stage" id="stage-illness"><span class="dot"></span><span class="label">Illness (mock)</span></div>
+  <span class="arrow">→</span>
+  <div class="stage" id="stage-who"><span class="dot"></span><span class="label">WHO</span></div>
+  <span class="arrow">→</span>
+  <div class="stage" id="stage-vision"><span class="dot"></span><span class="label">Vision</span></div>
+  <span class="arrow">→</span>
+  <div class="stage" id="stage-claude"><span class="dot"></span><span class="label">Claude</span></div>
+  <span class="arrow">→</span>
+  <div class="stage" id="stage-fetch"><span class="dot"></span><span class="label">Fetch.ai</span></div>
+</div>
+
+<!-- No-Redis banner (shown when Redis is down) -->
+<div class="no-redis" id="no-redis-banner" style="display:none">
+  <strong>Redis not reachable.</strong> Start Redis to see live data:
+  <code>docker compose -f redis/docker-compose.redis.yml up -d</code>
+  &nbsp;— Data below shows Redis-offline defaults.
+</div>
+
+<!-- Action bar -->
+<div class="actions" style="padding-top:18px;">
+  <button id="btn-who" onclick="refreshWho()">↻ Refresh WHO + Claude</button>
+  <button id="btn-capture" class="secondary" onclick="triggerCapture()">📷 Capture Image</button>
+  <button id="btn-negotiate" class="secondary" onclick="runNegotiation()" style="background:#1a1a3b;border-color:#4f46e5;color:#818cf8">⚡ Run Fetch.ai Negotiation</button>
+</div>
+
+<!-- Main grid -->
+<div class="grid">
+
+  <!-- WEATHER card -->
+  <div class="card">
+    <div class="card-header">
+      <span class="tag tag-ingestion">INGESTION</span>
+      <span class="title">Weather</span>
+      <span class="source">Open-Meteo (no key)</span>
+    </div>
+    <div class="card-body" id="card-weather">
+      <div class="empty">Waiting for data…</div>
+    </div>
+  </div>
+
+  <!-- ILLNESS card -->
+  <div class="card">
+    <div class="card-header">
+      <span class="tag tag-ingestion">INGESTION</span>
+      <span class="title">Illness Levels</span>
+      <span class="source">mock_illness_feed.json</span>
+    </div>
+    <div class="card-body" id="card-illness">
+      <div class="empty">Waiting for data…</div>
+    </div>
+  </div>
+
+  <!-- WHO card -->
+  <div class="card">
+    <div class="card-header">
+      <span class="tag tag-who">WHO</span>
+      <span class="title">Historical Disease Data</span>
+      <span class="source">disease.sh / WHO/JHU</span>
+    </div>
+    <div class="card-body" id="card-who">
+      <div class="empty">Click ↻ Refresh WHO to fetch…</div>
+    </div>
+  </div>
+
+  <!-- VISION card -->
+  <div class="card">
+    <div class="card-header">
+      <span class="tag tag-vision">VISION</span>
+      <span class="title">Camera Inventory</span>
+      <span class="source">Claude Vision (claude-sonnet-4-6)</span>
+    </div>
+    <div class="card-body" id="card-vision">
+      <div class="empty">No capture yet…</div>
+    </div>
+  </div>
+
+  <!-- CLAUDE REASONING card -->
+  <div class="card span2">
+    <div class="card-header">
+      <span class="tag tag-claude">CLAUDE REASONING</span>
+      <span class="title">Supply Risk Analysis</span>
+      <span class="source">claude-haiku-4-5-20251001</span>
+    </div>
+    <div class="card-body" id="card-claude">
+      <div class="empty">Click ↻ Refresh WHO + Claude to run reasoning…</div>
+    </div>
+  </div>
+
+  <!-- SCENARIO card -->
+  <div class="card">
+    <div class="card-header">
+      <span class="tag tag-scenario">SCENARIO</span>
+      <span class="title">Matched Scenario</span>
+      <span class="source">scenario:heatstroke</span>
+    </div>
+    <div class="card-body" id="card-scenario">
+      <div class="empty">No scenario data in Redis…</div>
+    </div>
+  </div>
+
+  <!-- INVENTORY card -->
+  <div class="card span2">
+    <div class="card-header">
+      <span class="tag tag-inventory">INVENTORY</span>
+      <span class="title">Hospital Stock Levels</span>
+      <span class="source">hospital:{id}:inventory</span>
+    </div>
+    <div class="card-body" id="card-inventory">
+      <div class="empty">No inventory in Redis…</div>
+    </div>
+  </div>
+
+  <!-- TRANSFERS card -->
+  <div class="card">
+    <div class="card-header">
+      <span class="tag tag-fetch">FETCH.AI</span>
+      <span class="title">Recent Transfers</span>
+      <span class="source">transfers stream</span>
+    </div>
+    <div class="card-body" id="card-transfers">
+      <div class="empty">No transfers logged yet…</div>
+    </div>
+  </div>
+
+  <!-- FETCH.AI NEGOTIATION card -->
+  <div class="card span2" id="card-negotiate-wrap" style="display:none">
+    <div class="card-header">
+      <span class="tag tag-fetch">FETCH.AI</span>
+      <span class="title">Agent Negotiation</span>
+      <span class="source">Bureau mode — 3-agent in-process</span>
+    </div>
+    <div class="card-body" id="card-negotiate">
+      <div class="empty">Click ⚡ Run Fetch.ai Negotiation to start…</div>
+    </div>
+  </div>
+
+  <!-- ALERTS card -->
+  <div class="card span3">
+    <div class="card-header">
+      <span class="tag tag-alerts">ALERTS</span>
+      <span class="title">Shortfall Alerts</span>
+      <span class="source">alerts:log stream</span>
+    </div>
+    <div class="card-body" id="card-alerts">
+      <div class="empty">No alerts…</div>
+    </div>
+  </div>
+
+</div><!-- /grid -->
+
+<div id="toast"></div>
+
+<script>
+// ── state polling ──────────────────────────────────────────────────────────
+let lastState = null;
+
+function poll() {
+  fetch('/api/state')
+    .then(r => r.json())
+    .then(state => {
+      lastState = state;
+      render(state);
+    })
+    .catch(() => {});
+}
+
+function render(s) {
+  // header
+  document.getElementById('ts').textContent = s.timestamp ? s.timestamp.replace('T',' ').slice(0,19)+' UTC' : '–';
+  const dot = document.getElementById('redis-dot');
+  const lbl = document.getElementById('redis-label');
+  if (s.redis_connected) {
+    dot.className = 'redis-dot ok';
+    lbl.textContent = 'Redis OK';
+    document.getElementById('no-redis-banner').style.display = 'none';
+  } else {
+    dot.className = 'redis-dot';
+    lbl.textContent = 'Redis DOWN';
+    document.getElementById('no-redis-banner').style.display = '';
+  }
+
+  // pipeline stage indicators
+  const fc = s.forecast;
+  const items = fc && fc.items ? fc.items : {};
+  setStage('weather', items.weather_temperature_c != null ? 'ok' : (s.redis_connected ? 'warn' : 'err'));
+  setStage('illness', items.illness ? 'ok' : (s.redis_connected ? 'warn' : 'err'));
+  setStage('who',     items.who_covid_30d_cases != null ? 'ok' : 'warn');
+  setStage('vision',  s.vision_image_available ? 'ok' : 'warn');
+  setStage('claude',  s.reasoning ? 'ok' : 'warn');
+  setStage('fetch',   s.transfers.length > 0 ? 'ok' : 'warn');
+
+  // weather
+  renderWeather(items);
+  // illness
+  renderIllness(items);
+  // who
+  renderWho(items);
+  // vision
+  renderVision(s);
+  // claude reasoning
+  renderClaude(s.reasoning);
+  // scenario
+  renderScenario(s.scenario);
+  // inventory
+  renderInventory(s.inventory, s.surplus, s.meta);
+  // transfers
+  renderTransfers(s.transfers);
+  // alerts
+  renderAlerts(s.alerts);
+}
+
+function setStage(id, cls) {
+  const el = document.getElementById('stage-' + id);
+  if (el) el.className = 'stage ' + cls;
+}
+
+function kv(k, v, cls) {
+  cls = cls || '';
+  return `<div class="kv"><span class="k">${k}</span><span class="v ${cls}">${v ?? '–'}</span></div>`;
+}
+
+function statusClass(status) {
+  const m = {ok:'ok', warning:'warn', low:'low', critical:'critical', warning_:'warn'};
+  return m[status] || '';
+}
+
+// WEATHER
+function renderWeather(items) {
+  const el = document.getElementById('card-weather');
+  const t = items.weather_temperature_c;
+  const w = items.weather_windspeed;
+  const c = items.weather_code;
+  if (t == null && w == null) { el.innerHTML = '<div class="empty">No weather data in Redis yet — run weather_agent</div>'; return; }
+  const codeLabel = weatherCodeLabel(c);
+  el.innerHTML =
+    kv('temperature', t != null ? t + ' °C' : '–') +
+    kv('windspeed', w != null ? w + ' km/h' : '–') +
+    kv('weather code', c != null ? c + ' (' + codeLabel + ')' : '–') +
+    kv('source', 'Open-Meteo API (no key)');
+}
+
+function weatherCodeLabel(code) {
+  if (code == null) return '?';
+  if (code === 0) return 'clear';
+  if (code <= 3) return 'cloudy';
+  if (code <= 49) return 'fog';
+  if (code <= 69) return 'rain';
+  if (code <= 79) return 'snow';
+  if (code <= 84) return 'showers';
+  return 'storm';
+}
+
+// ILLNESS
+function renderIllness(items) {
+  const el = document.getElementById('card-illness');
+  const ill = items.illness;
+  if (!ill || Object.keys(ill).length === 0) {
+    el.innerHTML = '<div class="empty">No illness data in Redis — run illness_agent</div>'; return;
+  }
+  const levelClass = l => ({ 'Very High': 'critical', 'High': 'low', 'Moderate': 'warn', 'Low': 'ok', 'Minimal': 'ok' }[l] || '');
+  el.innerHTML = Object.entries(ill).map(([k, v]) => kv(k, v, levelClass(v))).join('') +
+    kv('data source', 'mock_illness_feed.json (CDC not integrated)', 'warn');
+}
+
+// WHO
+function renderWho(items) {
+  const el = document.getElementById('card-who');
+  if (items.who_covid_30d_cases == null) {
+    el.innerHTML = '<div class="empty">Click ↻ Refresh WHO to fetch from disease.sh</div>'; return;
+  }
+  const trendArrow = { rising: '↑ rising', falling: '↓ falling', stable: '→ stable', unknown: '? unknown' };
+  const pct = items.who_covid_trend_pct;
+  el.innerHTML =
+    kv('covid 30d cases', (items.who_covid_30d_cases || 0).toLocaleString()) +
+    kv('covid 30d deaths', (items.who_covid_30d_deaths || 0).toLocaleString()) +
+    kv('7-day trend', (trendArrow[items.who_covid_trend] || items.who_covid_trend) + (pct ? ' (' + pct + '%)' : ''), items.who_covid_trend) +
+    kv('last data date', items.who_last_date || '–') +
+    kv('influenza', items.illness ? items.illness.influenza + ' (mock)' : 'see illness card', 'warn') +
+    kv('source', items.who_source || 'disease.sh / WHO/JHU');
+}
+
+// VISION
+function renderVision(s) {
+  const el = document.getElementById('card-vision');
+  const v = s.vision;
+  const ts = s.vision_image_ts;
+  let imgHtml = '';
+  if (s.vision_image_available) {
+    imgHtml = `<img class="vision-img" src="/image/latest?t=${ts || Date.now()}" alt="latest capture">`;
+  }
+  if (!v && !s.vision_image_available) {
+    el.innerHTML = '<div class="empty">No captures yet — click 📷 Capture</div>'; return;
+  }
+  const ha = v && v.hospital_a ? (v.hospital_a.saline ?? v.hospital_a.saline_bags ?? '–') : '–';
+  const hb = v && v.hospital_b ? (v.hospital_b.saline ?? v.hospital_b.saline_bags ?? '–') : '–';
+  const rawResp = v && v.claude_raw
+    ? `<div style="margin-top:10px"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px">Claude Vision response</div><pre style="font-size:11px;color:#a3e635;background:#0a1a00;border:1px solid #1a3300;border-radius:4px;padding:8px;white-space:pre-wrap;word-break:break-word">${escHtml(v.claude_raw)}</pre></div>`
+    : '';
+  el.innerHTML = imgHtml +
+    `<div class="vision-counts">
+      <div class="hospital-count"><div class="name">Hospital A</div><div class="count">${ha}</div><div class="item">saline bags</div></div>
+      <div class="hospital-count"><div class="name">Hospital B</div><div class="count">${hb}</div><div class="item">saline bags</div></div>
+    </div>` +
+    rawResp +
+    (v && v.captured_at ? kv('captured', v.captured_at.replace('T',' ').slice(0,19) + ' UTC') : '') +
+    (v && v.source ? kv('source', v.source) : '') +
+    (s.vision_image_name ? kv('image', s.vision_image_name) : '');
+}
+
+// CLAUDE REASONING
+function renderClaude(r) {
+  const el = document.getElementById('card-claude');
+  if (!r) {
+    el.innerHTML = '<div class="empty">Run WHO refresh to trigger Claude reasoning</div>'; return;
+  }
+  const risk = r.risk_level || 'unknown';
+  const riskClass = 'risk-' + risk;
+  const items = (r.priority_items || []).map(i => `<span class="priority-tag">${escHtml(i)}</span>`).join('');
+  el.innerHTML =
+    `<span class="risk-badge ${riskClass}">${risk.toUpperCase()} RISK</span>` +
+    `<div class="priority-tags">${items}</div>` +
+    `<div class="reasoning-text">${escHtml(r.reasoning || '')}</div>` +
+    `<div style="margin-top:8px">` + kv('action', escHtml(r.recommended_action || '–')) + `</div>` +
+    kv('updated', r.updated_at ? r.updated_at.replace('T',' ').slice(0,19) + ' UTC' : '–');
+}
+
+// SCENARIO
+function renderScenario(sc) {
+  const el = document.getElementById('card-scenario');
+  if (!sc) { el.innerHTML = '<div class="empty">Run seed_demo_data.py to load scenario</div>'; return; }
+  const dis = sc.disease || {};
+  const supplies = dis.required_supplies || [];
+  el.innerHTML =
+    kv('scenario', dis.name || '–') +
+    (supplies.length ? `<ul class="supply-list" style="margin-top:8px">${supplies.map(s => `<li>${escHtml(s)}</li>`).join('')}</ul>` : '') +
+    kv('forecast', (sc.forecast || {}).status || '–', 'warn') +
+    kv('recommendation', (sc.recommendation || {}).status || '–', 'warn');
+}
+
+// INVENTORY
+function renderInventory(inv, surplus, meta) {
+  const el = document.getElementById('card-inventory');
+  const hids = ['hospital_a', 'hospital_b', 'hospital_c'];
+  const names = { hospital_a: 'Hospital A', hospital_b: 'Hospital B', hospital_c: 'Hospital C' };
+
+  // Collect all items across all hospitals
+  const allItems = new Set();
+  hids.forEach(h => Object.keys(inv[h] || {}).forEach(i => allItems.add(i)));
+  if (!allItems.size) { el.innerHTML = '<div class="empty">No inventory in Redis — run seed_demo_data.py</div>'; return; }
+
+  const items = [...allItems].sort();
+  let html = '<div class="inv-grid">';
+  // header row
+  html += '<div class="cell header">Item</div>';
+  hids.forEach(h => html += `<div class="cell header">${names[h]}<br><span style="font-size:9px;color:var(--muted)">${(meta[h] && meta[h].name) || ''}</span></div>`);
+
+  items.forEach(item => {
+    html += `<div class="cell item-name">${escHtml(item)}</div>`;
+    hids.forEach(h => {
+      const rec = (inv[h] || {})[item];
+      const sur = (surplus[h] || {})[item];
+      if (rec) {
+        const sc = 'status-' + (rec.status || 'ok');
+        html += `<div class="cell"><span class="${sc}">${rec.qty ?? '–'}</span>`;
+        html += `<span style="color:var(--muted);font-size:10px"> ${rec.status || ''}</span>`;
+        if (sur != null) html += `<span style="color:var(--accent);font-size:10px"> (spare:${sur})</span>`;
+        html += '</div>';
+      } else {
+        html += `<div class="cell" style="color:var(--border)">–</div>`;
+      }
+    });
+  });
+  html += '</div>';
+  el.innerHTML = html;
+}
+
+// TRANSFERS
+function renderTransfers(transfers) {
+  const el = document.getElementById('card-transfers');
+  if (!transfers || !transfers.length) { el.innerHTML = '<div class="empty">No transfers yet — run a negotiation via front_agent or ASI:One</div>'; return; }
+  el.innerHTML = transfers.map(t =>
+    `<div class="transfer">
+      <span class="flow"><strong>${t.quantity} × ${t.item}</strong></span>
+      <span style="color:var(--muted)">${t.from_hospital} → ${t.to_hospital}</span>
+      <span class="detail">~${t.eta_minutes || '?'}min</span>
+      <span class="status-pill">${t.status || 'unknown'}</span>
+    </div>`
+  ).join('');
+}
+
+// ALERTS
+function renderAlerts(alerts) {
+  const el = document.getElementById('card-alerts');
+  if (!alerts || !alerts.length) { el.innerHTML = '<div class="empty">No alerts — run alerts.detect_shortfall_and_publish()</div>'; return; }
+  const sevClass = { critical: 'critical', warning: 'warn' };
+  el.innerHTML = alerts.map(a =>
+    `<div class="kv">
+      <span class="k">${a.hospital_id} / ${a.item}</span>
+      <span class="v ${sevClass[a.severity] || ''}">
+        ${a.type} — pct=${a.pct} demand+${a.predicted_demand_increase_pct || 0}%
+      </span>
+    </div>`
+  ).join('');
+}
+
+// ── actions ───────────────────────────────────────────────────────────────────
+function refreshWho() {
+  const btn = document.getElementById('btn-who');
+  btn.disabled = true;
+  btn.textContent = '⏳ Fetching WHO + Claude…';
+  fetch('/api/refresh_who', { method: 'POST' })
+    .then(r => r.json())
+    .then(d => {
+      btn.disabled = false;
+      btn.textContent = '↻ Refresh WHO + Claude';
+      if (d.ok) {
+        toast('WHO data + Claude reasoning updated ✓');
+        poll();
+      } else {
+        toast('Error: ' + d.error, true);
+      }
+    })
+    .catch(e => {
+      btn.disabled = false;
+      btn.textContent = '↻ Refresh WHO + Claude';
+      toast('Network error: ' + e, true);
+    });
+}
+
+function triggerCapture() {
+  const btn = document.getElementById('btn-capture');
+  btn.disabled = true;
+  btn.textContent = '⏳ Capturing…';
+  fetch('/api/capture', { method: 'POST' })
+    .then(r => r.json())
+    .then(d => {
+      btn.disabled = false;
+      btn.textContent = '📷 Capture Image';
+      if (d.ok) {
+        toast('Camera capture complete — counts written to Redis ✓');
+        poll();
+      } else {
+        toast('Capture error: ' + d.error, true);
+      }
+    })
+    .catch(e => {
+      btn.disabled = false;
+      btn.textContent = '📷 Capture Image';
+      toast('Network error: ' + e, true);
+    });
+}
+
+// ── Fetch.ai negotiation ────────────────────────────────────────────────────
+function runNegotiation() {
+  const btn = document.getElementById('btn-negotiate');
+  const card = document.getElementById('card-negotiate-wrap');
+  const body = document.getElementById('card-negotiate');
+  btn.disabled = true;
+  btn.textContent = '⏳ Negotiating…';
+  card.style.display = '';
+  body.innerHTML = '<div class="empty" style="color:#818cf8">Running 3-agent Bureau negotiation… (~15s)</div>';
+  setStage('fetch', 'warn');
+
+  fetch('/api/negotiate', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({redis:true})})
+    .then(r => r.json())
+    .then(d => {
+      btn.disabled = false;
+      btn.textContent = '⚡ Run Fetch.ai Negotiation';
+      if (d.ok) {
+        renderNegotiation(d);
+        setStage('fetch', 'ok');
+        toast('Fetch.ai negotiation complete ✓');
+      } else {
+        body.innerHTML = `<div style="color:var(--red);font-size:12px;white-space:pre-wrap">${escHtml(d.error)}</div>`;
+        setStage('fetch', 'err');
+        toast('Negotiation error: ' + d.error, true);
+      }
+    })
+    .catch(e => {
+      btn.disabled = false;
+      btn.textContent = '⚡ Run Fetch.ai Negotiation';
+      setStage('fetch', 'err');
+      toast('Network error: ' + e, true);
+    });
+}
+
+function renderNegotiation(d) {
+  const body = document.getElementById('card-negotiate');
+
+  // Show what the negotiation was based on
+  let sourceHtml = '';
+  if (d.vision_source) {
+    const isVision = d.vision_source.startsWith('vision');
+    sourceHtml = `<div style="margin-bottom:10px;padding:6px 10px;background:${isVision?'#0a1a0a':'#1a1a0a'};border:1px solid ${isVision?'#1a3300':'#2a2a00'};border-radius:4px;font-size:11px;color:${isVision?'#4ade80':'#facc15'}">
+      ${isVision?'📷':'⚠️'} <strong>${escHtml(d.item)}</strong> — need <strong>${d.need}</strong> units
+      ${d.vision_a != null ? `(Hospital A camera count: <strong>${d.vision_a}</strong>${d.vision_b != null ? `, Hospital B: <strong>${d.vision_b}</strong>` : ''})` : ''}
+      <br><span style="color:var(--muted)">${escHtml(d.vision_source)}</span>
+    </div>`;
+  }
+
+  const tagColor = { idle:'#64748b', shortfall:'#f87171', requesting:'#fb923c',
+    collecting:'#facc15', evaluating:'#a78bfa', proposing:'#60a5fa',
+    settling:'#34d399', confirmed:'#4ade80', failed:'#f87171',
+    offer:'#94a3b8', accepted:'#4ade80', rejected:'#f87171',
+    split:'#fb923c', escalation:'#f87171' };
+
+  let evHtml = '';
+  if (d.events && d.events.length) {
+    evHtml = '<div style="margin-bottom:10px">';
+    d.events.forEach(ev => {
+      const c = tagColor[ev.tag] || '#94a3b8';
+      evHtml += `<div style="margin:3px 0;font-size:12px;display:flex;gap:8px;align-items:flex-start">
+        <span style="background:${c}22;color:${c};border:1px solid ${c}44;border-radius:3px;padding:1px 6px;font-size:10px;white-space:nowrap;flex-shrink:0">${ev.tag}</span>
+        <span style="color:#cbd5e1;line-height:1.4">${escHtml(ev.msg)}</span></div>`;
+    });
+    evHtml += '</div>';
+  }
+
+  const logHtml = d.log
+    ? `<details style="margin-top:8px"><summary style="cursor:pointer;color:var(--muted);font-size:11px">Raw agent log</summary>
+       <pre style="font-size:10px;color:#64748b;background:#0a0a0a;border:1px solid #1e293b;border-radius:4px;padding:8px;margin-top:6px;white-space:pre-wrap;max-height:200px;overflow-y:auto">${escHtml(d.log)}</pre></details>`
+    : '';
+
+  body.innerHTML = sourceHtml + evHtml + logHtml || '<div class="empty">No events parsed</div>';
+}
+
+// ── toast ──────────────────────────────────────────────────────────────────
+function toast(msg, err) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.style.borderColor = err ? 'var(--red)' : 'var(--green)';
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 4000);
+}
+
+// ── helpers ────────────────────────────────────────────────────────────────
+function escHtml(s) {
+  if (!s) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── boot ───────────────────────────────────────────────────────────────────
+poll();
+setInterval(poll, 3000);
+</script>
+</body>
+</html>

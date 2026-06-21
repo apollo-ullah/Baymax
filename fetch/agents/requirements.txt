@@ -2,3 +2,4 @@ uagents
 httpx
 python-dotenv
 redis
+anthropic

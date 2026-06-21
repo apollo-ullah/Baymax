@@ -175,7 +175,12 @@ async def start_negotiation(ctx: Context, item: str, *, requester: str = REQUEST
     await _step(ctx, neg, NegotiationState.REQUESTING,
                 f"Broadcasting request {req_id} for {need} {item} to {len(SURPLUS_ADDRESSES)} facilities.",
                 narrate=True)
-    for addr in SURPLUS_ADDRESSES.values():
+    for facility_name, addr in SURPLUS_ADDRESSES.items():
+        ctx.logger.info(
+            "[FETCH] action=send_supply_request from=%s to=%s to_addr=%s "
+            "message_type=SupplyRequest item=%s quantity=%d req_id=%s",
+            requester, facility_name, addr, item, need, req_id,
+        )
         await ctx.send(addr, req)
     neg["state"] = NegotiationState.COLLECTING_OFFERS
     return req_id
@@ -260,6 +265,11 @@ async def _propose_leg(ctx: Context, neg: dict, req_id: str, pid: str,
     await _step(ctx, neg, NegotiationState.PROPOSING,
                 f"Leg {pid}: move {quantity} {neg['item']} from {offerer} "
                 f"-> {neg['requester']} (~{eta_minutes} min).")
+    ctx.logger.info(
+        "[FETCH] action=send_transfer_proposal from=%s to=%s "
+        "message_type=TransferProposal pid=%s item=%s quantity=%d eta_minutes=%d",
+        neg["requester"], offerer, pid, neg["item"], quantity, eta_minutes,
+    )
     await ctx.send(SURPLUS_ADDRESSES[offerer], prop)
 
 
@@ -517,6 +527,12 @@ def attach_front_handlers(front):
         if msg.offerer in neg["offers"]:
             return
         neg["offers"][msg.offerer] = msg
+        ctx.logger.info(
+            "[FETCH] action=receive_supply_offer from=%s can_offer=%s "
+            "quantity_available=%d distance_km=%.1f eta_minutes=%d expiry=%s req_id=%s",
+            msg.offerer, msg.can_offer, msg.quantity_available,
+            msg.distance_km, msg.eta_minutes, msg.expiry, msg.request_id,
+        )
         status = (f"can spare {msg.quantity_available} (≈{msg.distance_km:.0f} km, "
                   f"exp {msg.expiry})") if msg.can_offer else "declines (no spare)"
         await _step(ctx, neg, NegotiationState.COLLECTING_OFFERS,
@@ -535,6 +551,10 @@ def attach_front_handlers(front):
         neg["pending"].discard(msg.proposal_id)
         neg["accepts"].add(msg.proposal_id)
         total = len(neg["leg"])
+        ctx.logger.info(
+            "[FETCH] action=receive_transfer_accept from=%s pid=%s req_id=%s",
+            msg.accepted_by, msg.proposal_id, msg.request_id,
+        )
         await _step(ctx, neg, NegotiationState.PROPOSING,
                     f"{msg.accepted_by} accepted leg {msg.proposal_id}  "
                     f"[{len(neg['accepts'])}/{total}]")
@@ -551,6 +571,10 @@ def attach_front_handlers(front):
         neg["pending"].discard(msg.proposal_id)
         neg["rejects"].add(msg.proposal_id)
 
+        ctx.logger.info(
+            "[FETCH] action=receive_transfer_reject from=%s pid=%s req_id=%s reason=%s",
+            msg.rejected_by, msg.proposal_id, msg.request_id, msg.reason,
+        )
         leg = neg["leg"].get(msg.proposal_id, {})
         dropped_qty = leg.get("quantity", 0)
         rejecter = msg.rejected_by or leg.get("offerer")
@@ -608,6 +632,11 @@ def attach_hospital_handlers(agent, facility: str):
 
     @agent.on_message(model=SupplyRequest)
     async def on_request(ctx: Context, sender: str, msg: SupplyRequest):
+        ctx.logger.info(
+            "[FETCH] action=receive_supply_request at=%s from=%s "
+            "item=%s quantity_needed=%d req_id=%s",
+            facility, msg.requester, msg.item, msg.quantity_needed, msg.request_id,
+        )
         inv = get_inventory(facility, msg.item)
         spare = inv.spare_capacity
         if spare > 0:
@@ -618,21 +647,43 @@ def attach_hospital_handlers(agent, facility: str):
                 eta_minutes=eta_minutes_for(dist), expiry=expiry_for(facility, msg.item),
                 can_offer=True,
             )
+            ctx.logger.info(
+                "[FETCH] action=send_supply_offer from=%s to=%s "
+                "item=%s quantity=%d distance_km=%.1f eta_minutes=%d can_offer=True req_id=%s",
+                facility, msg.requester, msg.item, spare, dist,
+                eta_minutes_for(dist), msg.request_id,
+            )
             ctx.logger.info(f"[{facility}] Offering {spare} {msg.item} "
                             f"(have {inv.qty}, safety {inv.safety_threshold}).")
         else:
             offer = SupplyOffer(request_id=msg.request_id, offerer=facility,
                                 item=msg.item, quantity_available=0, can_offer=False)
+            ctx.logger.info(
+                "[FETCH] action=send_supply_offer from=%s to=%s "
+                "item=%s quantity=0 can_offer=False req_id=%s",
+                facility, msg.requester, msg.item, msg.request_id,
+            )
             ctx.logger.info(f"[{facility}] No spare {msg.item} — declining.")
         await ctx.send(sender, offer)
 
     @agent.on_message(model=TransferProposal)
     async def on_proposal(ctx: Context, sender: str, msg: TransferProposal):
+        ctx.logger.info(
+            "[FETCH] action=receive_transfer_proposal at=%s from=%s "
+            "item=%s quantity=%d leg=%d/%d pid=%s req_id=%s",
+            facility, msg.from_facility, msg.item, msg.quantity,
+            msg.leg_index + 1, msg.leg_count, msg.proposal_id, msg.request_id,
+        )
         # Forced-reject knob: reject the first leg this facility is proposed.
         if force_reject == facility and not _forced["done"]:
             _forced["done"] = True
             ctx.logger.info(f"[{facility}] FORCING reject of leg {msg.proposal_id} "
                             f"(STOCKPILE_FORCE_REJECT).")
+            ctx.logger.info(
+                "[FETCH] action=send_transfer_reject from=%s state=supply_request_rejected "
+                "pid=%s item=%s quantity=%d reason=forced_reject req_id=%s",
+                facility, msg.proposal_id, msg.item, msg.quantity, msg.request_id,
+            )
             await ctx.send(sender, TransferReject(
                 request_id=msg.request_id, proposal_id=msg.proposal_id,
                 rejected_by=facility, reason="forced reject (demo)"))
@@ -642,11 +693,23 @@ def attach_hospital_handlers(agent, facility: str):
         if inv.spare_capacity >= msg.quantity:
             ctx.logger.info(f"[{facility}] Accepting leg {msg.leg_index + 1}/{msg.leg_count}: "
                             f"{msg.quantity} {msg.item} -> {msg.to_facility}.")
+            ctx.logger.info(
+                "[FETCH] action=send_transfer_accept from=%s to=%s state=supply_request_accepted "
+                "item=%s quantity=%d pid=%s req_id=%s",
+                facility, msg.to_facility, msg.item, msg.quantity,
+                msg.proposal_id, msg.request_id,
+            )
             await ctx.send(sender, TransferAccept(request_id=msg.request_id,
                                                   proposal_id=msg.proposal_id, accepted_by=facility))
         else:
             ctx.logger.info(f"[{facility}] Rejecting leg {msg.proposal_id}: only "
                             f"{inv.spare_capacity} spare, asked for {msg.quantity}.")
+            ctx.logger.info(
+                "[FETCH] action=send_transfer_reject from=%s state=supply_request_rejected "
+                "item=%s quantity_asked=%d spare=%d pid=%s req_id=%s",
+                facility, msg.item, msg.quantity, inv.spare_capacity,
+                msg.proposal_id, msg.request_id,
+            )
             await ctx.send(sender, TransferReject(request_id=msg.request_id,
                                                   proposal_id=msg.proposal_id, rejected_by=facility,
                                                   reason=f"only {inv.spare_capacity} spare"))

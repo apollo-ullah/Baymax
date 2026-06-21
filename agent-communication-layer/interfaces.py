@@ -16,9 +16,12 @@ types and the protocol.py wire models.
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass, field
 from typing import List, Optional
+
+_log = logging.getLogger("stockpile.interfaces")
 
 
 # ---------------------------------------------------------------------------
@@ -270,7 +273,18 @@ def rank_offers(need: SupplyNeed, offers: List[OfferView]) -> RankedPlan:
     until the need is met. This deterministically produces the canonical split
     (150 from the near facility + 50 from the far one) for the demo scenario,
     and degrades cleanly to full-cover (one allocation) and no-offer (empty).
+
+    NOTE: Claude API is NOT called here. To enable Claude reasoning, replace the
+    greedy logic below with an anthropic.Anthropic().messages.create() call and
+    parse the structured JSON response into a RankedPlan.
     """
+    _log.info(
+        "[CLAUDE_REASONING] action=rank_offers_start backend=mock_greedy "
+        "item=%s quantity_needed=%d requester=%s offer_count=%d "
+        "offers=%s",
+        need.item, need.quantity_needed, need.requester, len(offers),
+        [(o.offerer, o.quantity_available, o.distance_km) for o in offers],
+    )
     usable = [o for o in offers if o.quantity_available > 0]
     usable.sort(key=lambda o: (o.distance_km, -o.quantity_available))
 
@@ -312,10 +326,19 @@ def rank_offers(need: SupplyNeed, offers: List[OfferView]) -> RankedPlan:
             f"Split across {len(allocations)} facilities"
         rationale = f"{split_note}, nearest-first: {legs}. This {cover}."
 
-    return RankedPlan(
+    plan = RankedPlan(
         allocations=allocations,
         total_covered=total_covered,
         shortfall_remaining=max(0, remaining),
         fully_covered=fully_covered,
         rationale=rationale,
     )
+    _log.info(
+        "[CLAUDE_REASONING] action=rank_offers_complete backend=mock_greedy "
+        "item=%s total_covered=%d shortfall_remaining=%d fully_covered=%s "
+        "allocations=%s rationale=%r",
+        need.item, plan.total_covered, plan.shortfall_remaining, plan.fully_covered,
+        [(a.offerer, a.quantity) for a in plan.allocations],
+        plan.rationale,
+    )
+    return plan

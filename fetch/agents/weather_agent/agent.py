@@ -7,6 +7,7 @@ signals to forecast:{region} via the Redis bridge (fetch/shared/redis_io.py)
 and/or sends WeatherUpdate to the intelligence agent that ranks offers.
 """
 
+import json
 import os
 
 import httpx
@@ -24,6 +25,11 @@ LONGITUDE = float(os.getenv("WEATHER_LONGITUDE", "-122.2727"))
 # Region this signal belongs to — must match the Redis track's seeded region.
 REGION = os.getenv("FORECAST_REGION", "san_francisco")
 
+OPEN_METEO_URL = (
+    "https://api.open-meteo.com/v1/forecast"
+    f"?latitude={LATITUDE}&longitude={LONGITUDE}&current_weather=true"
+)
+
 # Seed derives the agent's identity/address — keep it secret, set it in .env.
 agent = Agent(
     name="weather_agent",
@@ -33,14 +39,21 @@ agent = Agent(
 )
 
 
+@agent.on_event("startup")
+async def on_startup(ctx: Context):
+    ctx.logger.info(json.dumps({
+        "tag": "INGESTION", "file": "weather_agent/agent.py",
+        "action": "startup", "region": REGION,
+        "lat": LATITUDE, "lng": LONGITUDE,
+        "api": "open-meteo (no key required)",
+        "interval_s": 30,
+    }))
+
+
 async def fetch_weather() -> dict:
     """Fetch current weather from Open-Meteo."""
-    url = (
-        "https://api.open-meteo.com/v1/forecast"
-        f"?latitude={LATITUDE}&longitude={LONGITUDE}&current_weather=true"
-    )
     async with httpx.AsyncClient() as client:
-        resp = await client.get(url, timeout=10)
+        resp = await client.get(OPEN_METEO_URL, timeout=10)
         resp.raise_for_status()
         return resp.json().get("current_weather", {})
 
@@ -48,24 +61,64 @@ async def fetch_weather() -> dict:
 @agent.on_interval(period=30.0)
 async def poll_weather(ctx: Context):
     """Every 30s, pull weather and write the demand signal to forecast:{region}."""
+    ctx.logger.info(json.dumps({
+        "tag": "INGESTION", "file": "weather_agent/agent.py",
+        "action": "api_request",
+        "endpoint": "https://api.open-meteo.com/v1/forecast",
+        "params": {"latitude": LATITUDE, "longitude": LONGITUDE,
+                   "current_weather": True},
+    }))
+
     try:
         weather = await fetch_weather()
-        ctx.logger.info(f"Current weather: {weather}")
+        ctx.logger.info(json.dumps({
+            "tag": "INGESTION", "file": "weather_agent/agent.py",
+            "action": "api_response", "source": "open-meteo",
+            "payload": weather,
+        }))
     except Exception as e:
-        ctx.logger.error(f"Failed to fetch weather: {e}")
+        ctx.logger.error(json.dumps({
+            "tag": "INGESTION", "file": "weather_agent/agent.py",
+            "action": "api_error", "error": str(e),
+        }))
         return
+
+    items = {
+        "weather_temperature_c": weather.get("temperature"),
+        "weather_windspeed": weather.get("windspeed"),
+        "weather_code": weather.get("weathercode"),
+    }
+    ctx.logger.info(json.dumps({
+        "tag": "INGESTION", "file": "weather_agent/agent.py",
+        "action": "transform", "transformed_items": items,
+    }))
 
     # Write our slice of the forecast to Redis (resilient: a Redis outage must
     # not kill the agent — PRD §12, every dependency has a fallback).
     try:
-        redis_io.upsert_forecast_items(REGION, {
-            "weather_temperature_c": weather.get("temperature"),
-            "weather_windspeed": weather.get("windspeed"),
-            "weather_code": weather.get("weathercode"),
-        })
-        ctx.logger.info(f"Wrote weather signal to forecast:{REGION}")
+        redis_io.upsert_forecast_items(REGION, items)
+        ctx.logger.info(json.dumps({
+            "tag": "INGESTION", "file": "weather_agent/agent.py",
+            "action": "redis_write",
+            "key": f"forecast:{REGION}",
+            "payload": items,
+        }))
+
+        # Verification read
+        written = redis_io.get_forecast(REGION)
+        ctx.logger.info(json.dumps({
+            "tag": "INGESTION", "file": "weather_agent/agent.py",
+            "action": "redis_read_verify",
+            "key": f"forecast:{REGION}",
+            "payload": written,
+        }))
     except Exception as e:
-        ctx.logger.error(f"Redis write failed (forecast:{REGION}): {e}")
+        ctx.logger.error(json.dumps({
+            "tag": "INGESTION", "file": "weather_agent/agent.py",
+            "action": "redis_error",
+            "key": f"forecast:{REGION}",
+            "error": str(e),
+        }))
 
     # TODO: ctx.send(INTELLIGENCE_AGENT_ADDRESS, WeatherUpdate(**weather))
 
