@@ -194,7 +194,7 @@
 <!-- Action bar -->
 <div class="actions" style="padding-top:18px;">
   <button id="btn-who" onclick="refreshWho()">↻ Refresh WHO + Claude</button>
-  <button id="btn-capture" class="secondary" onclick="triggerCapture()">📷 Capture (Hospital A)</button>
+  <button id="btn-capture" class="secondary" onclick="triggerCapture()">📷 Capture Both</button>
   <button id="btn-negotiate" class="secondary" onclick="runNegotiation()" style="background:#1a1a3b;border-color:#4f46e5;color:#818cf8">⚡ Run Fetch.ai Negotiation</button>
   <button id="btn-bureau" class="secondary" onclick="startBureau()" style="background:#0a1a0a;border-color:#166534;color:#4ade80">▶ Start Bureau</button>
   <div class="bureau-status">
@@ -501,6 +501,8 @@ function renderWho(items) {
 // VISION — two laptop cameras side by side
 let _visionTs = Date.now();
 function renderVision(s) {
+  // Bump the cache-buster every poll so the live camera feed refetches.
+  _visionTs = Date.now();
   const el = document.getElementById('card-vision');
   const v = s.vision;
   const ha = v && v.hospital_a ? (v.hospital_a.saline ?? v.hospital_a.saline_bags ?? null) : null;
@@ -671,12 +673,21 @@ function triggerCapture() {
   const btn = document.getElementById('btn-capture');
   btn.disabled = true;
   btn.textContent = '⏳ Capturing…';
+
+  // 1) Tell any remote watchers (e.g. Hospital B's laptop) to take one shot.
+  fetch('/api/capture_request', { method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ target: 'all' }) })
+    .then(r => r.json())
+    .then(d => { if (d.ok && d.subscribers) toast('Triggered ' + d.subscribers + ' remote camera(s) 📡'); })
+    .catch(() => {});
+
+  // 2) Capture this machine's camera (Hospital A) locally.
   fetch('/api/capture', { method: 'POST', headers: {'Content-Type':'application/json'},
     body: JSON.stringify({}) })
     .then(r => r.json())
     .then(d => {
       btn.disabled = false;
-      btn.textContent = '📷 Capture (Hospital A)';
+      btn.textContent = '📷 Capture Both';
       if (d.ok) {
         toast('Hospital A captured — counts written to Redis ✓');
         refreshCameraImages();
@@ -687,9 +698,12 @@ function triggerCapture() {
     })
     .catch(e => {
       btn.disabled = false;
-      btn.textContent = '📷 Capture (Hospital A)';
+      btn.textContent = '📷 Capture Both';
       toast('Network error: ' + e, true);
     });
+
+  // Refresh the remote image shortly after, once B has had time to capture.
+  setTimeout(() => { refreshCameraImages(); poll(); }, 6000);
 }
 
 function startBureau() {

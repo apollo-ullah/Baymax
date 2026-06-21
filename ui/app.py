@@ -423,6 +423,30 @@ def api_capture():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+@app.route("/api/capture_request", methods=["POST"])
+def api_capture_request():
+    """
+    Publish a one-shot capture trigger to the shared Redis so remote hospital
+    machines running `capture_single.py --watch` take a single picture.
+
+    Body (JSON, optional):
+        target — "hospital_a" | "hospital_b" | "all" (default "all")
+    """
+    data = request.get_json(silent=True) or {}
+    target = data.get("target", "all")
+    try:
+        r = _redis()
+        n = r.publish("vision:capture_request", json.dumps({"target": target}))
+        log.info(json.dumps({
+            "tag": "VISION", "file": "ui/app.py",
+            "action": "capture_request_published",
+            "target": target, "subscribers": n,
+        }))
+        return jsonify({"ok": True, "target": target, "subscribers": n})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.route("/api/refresh_who", methods=["POST"])
 def api_refresh_who():
     """Re-run the WHO fetch + Claude reasoning pipeline and write to Redis."""
