@@ -331,20 +331,29 @@ async def _finalize_from_payment(
     pending = _PAYMENT_PENDING.pop(key, None)
     if not pending:
         return
-    from baymax_agents import finalize_after_payment  # lazy import
+    if pending.get("kind") == "order":
+        from baymax_agents import finalize_order_after_payment  # lazy import
 
-    await finalize_after_payment(
-        ctx, pending["req_id"], key, tx_id=tx_id,
-    )
+        await finalize_order_after_payment(ctx, pending["req_id"], key, tx_id=tx_id)
+    else:
+        from baymax_agents import finalize_after_payment  # lazy import
+
+        await finalize_after_payment(ctx, pending["req_id"], key, tx_id=tx_id)
 
 
 async def _fail_from_payment(ctx: Context, reference: Optional[str], reason: str) -> None:
-    pending = _PAYMENT_PENDING.pop(_resolve_pending_key(reference), None)
+    key = _resolve_pending_key(reference)
+    pending = _PAYMENT_PENDING.pop(key, None)
     if not pending:
         return
-    from baymax_agents import fail_after_payment  # lazy import
+    if pending.get("kind") == "order":
+        from baymax_agents import fail_order_after_payment  # lazy import
 
-    await fail_after_payment(ctx, pending["req_id"], reason)
+        await fail_order_after_payment(ctx, pending["req_id"], reason)
+    else:
+        from baymax_agents import fail_after_payment  # lazy import
+
+        await fail_after_payment(ctx, pending["req_id"], reason)
 
 
 # ---------------------------------------------------------------------------
@@ -448,6 +457,7 @@ async def request_payment(
     amount: Optional[str] = None,
     reference: Optional[str] = None,
     description: Optional[str] = None,
+    recipient: Optional[str] = None,
 ) -> RequestPayment:
     """SEND a RequestPayment to `user_address` and return the message we sent.
 
@@ -459,7 +469,9 @@ async def request_payment(
     CommitPayment once they approve + sign.
     """
     funds = make_funds(amount)
-    recipient = resolve_recipient_wallet(ctx)
+    # Explicit payee (e.g. a supplier wallet for external orders) overrides our
+    # own wallet; otherwise bill to OUR FET wallet (the trade facilitation case).
+    recipient = recipient or resolve_recipient_wallet(ctx)
 
     # ASI:One's chat UI builds the in-chat "Approve FET Payment" card from
     # RequestPayment.metadata — specifically metadata["provider_agent_wallet"]
@@ -600,6 +612,57 @@ async def settle_via_payment_protocol(
     return reference
 
 
+async def settle_order_via_payment_protocol(
+    ctx: Context,
+    req_id: str,
+    order,
+    user_address: str,
+    reply_to: Optional[str] = None,
+) -> str:
+    """Settle an external-supplier ORDER via the Payment Protocol.
+
+    Sends a RequestPayment to the chat admin for a SYMBOLIC FET amount
+    representing the purchase (we cannot pay a vendor in crypto at checkout). The
+    payee is BAYMAX_SUPPLIER_WALLET when set (a distinct 'supplier' fetch1...
+    wallet), otherwise OUR FET wallet — and the description says so explicitly.
+    The FET amount uses the same per-unit/flat pricing as trades (the vendor's
+    USD total is shown in the narration, not converted). Reference is
+    `order-<req_id>` so it never collides with a trade's `pay-<req_id>`.
+    """
+    reference = f"order-{req_id}"
+    qty = int(getattr(order, "quantity", 0) or 0)
+    amount = _amount_for_total(qty)
+    supplier_wallet = os.getenv("BAYMAX_SUPPLIER_WALLET", "").strip() or None
+    payee_note = "to the supplier wallet" if supplier_wallet else (
+        "(symbolic FET settlement representing the external purchase)"
+    )
+    description = (
+        f"Baymax external supplier order {req_id}: {qty} {getattr(order, 'item', '')} "
+        f"from {getattr(order, 'vendor', 'supplier')} "
+        f"(vendor quote {getattr(order, 'total_price', '?')} {getattr(order, 'currency', 'USD')}) "
+        f"— {payee_note}."
+    )
+    await request_payment(
+        ctx,
+        user_address=user_address,
+        amount=amount,
+        reference=reference,
+        description=description,
+        recipient=supplier_wallet,
+    )
+    chat = reply_to or user_address
+    if chat:
+        _PAYMENT_PENDING[reference] = {
+            "reply_to": chat, "req_id": req_id, "kind": "order",
+        }
+    ctx.logger.info(
+        f"[payment] settle_order_via_payment_protocol: requested {amount} FET for "
+        f"order {req_id} from {user_address}; payee="
+        f"{supplier_wallet or 'OUR wallet (symbolic)'}; reference={reference}."
+    )
+    return reference
+
+
 __all__ = [
     "PAYMENT_ROLE",
     "PAYMENT_AMOUNT_FET",
@@ -612,4 +675,5 @@ __all__ = [
     "build_payment_protocol",
     "request_payment",
     "settle_via_payment_protocol",
+    "settle_order_via_payment_protocol",
 ]
