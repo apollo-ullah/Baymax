@@ -3,61 +3,126 @@
 <head>
 <meta charset="utf-8">
 <title>Baymax Pipeline</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg: #0f1117; --surface: #1a1d27; --border: #2a2d3e;
-    --text: #e2e8f0; --muted: #8892a4; --accent: #6366f1;
-    --green: #22c55e; --yellow: #eab308; --red: #ef4444;
-    --orange: #f97316; --blue: #3b82f6; --purple: #a855f7;
+    /* Stripe-inspired system */
+    --bg: #f6f9fc; --surface: #ffffff; --border: #e6ebf1;
+    --text: #0a2540; --muted: #697386; --accent: #635bff; --accent2: #00d4ff;
+    --green: #15803d; --yellow: #b25e09; --red: #df1b41;
+    --orange: #c2410c; --blue: #0073e6; --purple: #7a5cff;
+    --shadow: 0 1px 1px rgba(10,37,64,.04), 0 4px 12px rgba(10,37,64,.06);
+    --shadow-hover: 0 7px 14px rgba(50,50,93,.10), 0 3px 6px rgba(10,37,64,.08);
+    --radius: 14px;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: var(--bg); color: var(--text); font-family: 'SF Mono', 'Fira Code', monospace; font-size: 13px; }
+  html { scroll-behavior: smooth; }
+  body { background: radial-gradient(1100px 520px at 100% -10%, rgba(99,91,255,.07), transparent 60%), var(--bg);
+    color: var(--text); font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    font-size: 13px; -webkit-font-smoothing: antialiased; animation: pageIn .5s ease both; }
+  /* Stripe signature gradient strip */
+  body::before { content: ''; position: fixed; top: 0; left: 0; right: 0; height: 4px; z-index: 50;
+    background: linear-gradient(90deg, #635bff, #00d4ff 45%, #21c08b 75%, #ffb37b); }
+  ::selection { background: rgba(99,91,255,.18); }
+  @keyframes pageIn { from { opacity: 0; } to { opacity: 1; } }
 
   /* ── header ── */
-  header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 14px 24px; display: flex; align-items: center; gap: 16px; }
-  header h1 { font-size: 16px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
-  .region-badge { background: var(--border); padding: 3px 10px; border-radius: 99px; font-size: 11px; color: var(--muted); }
-  .redis-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--red); transition: background .3s; }
-  .redis-dot.ok { background: var(--green); }
-  header .right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
-  .ts { color: var(--muted); font-size: 11px; }
+  header { position: relative; background: linear-gradient(115deg, rgba(99,91,255,.10), rgba(0,212,255,.05) 55%, transparent), rgba(255,255,255,.86); border-bottom: 1px solid var(--border); padding: 16px 28px; display: flex; align-items: center; justify-content: center; gap: 18px; }
+  header .logo { height: 116px; width: 116px; border-radius: 24px; object-fit: cover; background: #0f172a; border: 1px solid var(--border); flex-shrink: 0; box-shadow: var(--shadow); }
+  header h1 { font-size: 48px; letter-spacing: .04em; text-transform: uppercase; font-weight: 800; line-height: 1;
+    background: linear-gradient(90deg, var(--accent), var(--accent2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  header .logo, header h1 { position: relative; z-index: 1; }
+  header .right { z-index: 3; }
+  .deco { position: absolute; top: 0; height: 100%; width: 300px; object-fit: cover; opacity: .9; pointer-events: none; z-index: 0; }
+  .deco-left  { left: 0;  -webkit-mask-image: linear-gradient(90deg, #000 45%, transparent); mask-image: linear-gradient(90deg, #000 45%, transparent); }
+  .deco-right { right: 0; transform: scaleX(-1); -webkit-mask-image: linear-gradient(90deg, #000 45%, transparent); mask-image: linear-gradient(90deg, #000 45%, transparent); }
+  @media (max-width: 920px) { .deco { display: none; } }
+  .region-badge { background: rgba(99,102,241,.10); padding: 4px 12px; border-radius: 99px; font-size: 11px; color: var(--accent); font-weight: 600; }
+  .redis-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--red); transition: background .3s; }
+  .redis-dot.ok { background: var(--green); animation: pulseDot 2s ease-out infinite; }
+  @keyframes pulseDot { 0% { box-shadow: 0 0 0 0 rgba(22,163,74,.5); } 70% { box-shadow: 0 0 0 8px rgba(22,163,74,0); } 100% { box-shadow: 0 0 0 0 rgba(22,163,74,0); } }
+  header .right { position: absolute; right: 28px; top: 50%; transform: translateY(-50%); display: flex; align-items: center; gap: 12px; }
+  .status-pill { display: flex; align-items: center; gap: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: 99px; padding: 8px 14px; box-shadow: var(--shadow); font-size: 11px; font-weight: 600; color: var(--text); }
+  .ts { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 
   /* ── pipeline bar ── */
-  .pipeline { display: flex; align-items: center; gap: 0; background: var(--surface); border-bottom: 1px solid var(--border); padding: 10px 24px; overflow-x: auto; }
-  .stage { display: flex; align-items: center; gap: 8px; padding: 4px 14px; border-radius: 6px; white-space: nowrap; }
-  .stage .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
-  .stage.ok .dot { background: var(--green); }
+  .pipeline { display: flex; align-items: center; gap: 0; background: var(--surface); border-bottom: 1px solid var(--border); padding: 12px 24px; overflow-x: auto; box-shadow: var(--shadow); }
+  .stage { display: flex; align-items: center; gap: 8px; padding: 5px 14px; border-radius: 99px; white-space: nowrap; transition: background .25s; }
+  .stage.ok { background: rgba(22,163,74,.08); }
+  .stage.warn { background: rgba(202,138,4,.10); }
+  .stage .dot { width: 7px; height: 7px; border-radius: 50%; background: #cbd5e1; }
+  .stage.ok .dot { background: var(--green); animation: pulseDot 2s ease-out infinite; }
   .stage.warn .dot { background: var(--yellow); }
   .stage.err .dot { background: var(--red); }
-  .stage .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
-  .arrow { color: var(--border); margin: 0 4px; }
+  .stage .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; font-weight: 600; }
+  .stage.ok .label { color: var(--green); }
+  .arrow { color: #cbd5e1; margin: 0 2px; animation: arrowFlow 1.6s ease-in-out infinite; }
+  @keyframes arrowFlow { 0%,100% { opacity: .3; transform: translateX(0); } 50% { opacity: 1; transform: translateX(3px); } }
 
   /* ── main grid ── */
-  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; padding: 18px 24px; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; padding: 20px 24px; }
+
+  /* ── carousel ── */
+  .carousel { position: relative; padding: 0 60px 16px; }
+  .car-track { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 16px; padding: 6px 4px; }
+  .car-track > .card { flex: 0 0 calc((100% - 16px) / 2); min-width: 0; display: flex; flex-direction: column; height: 420px; }
+  .car-track > .card.car-full { flex: 0 0 100%; }
+  .car-track > .card > .card-body { flex: 1 1 auto; overflow: auto; }
+  .car-nav { position: absolute; top: 50%; transform: translateY(-50%); width: 44px; height: 44px; padding: 0; border-radius: 50%; background: var(--surface); border: 1px solid var(--border); box-shadow: var(--shadow); color: var(--text); font-size: 22px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center; z-index: 5; transition: box-shadow .15s, transform .15s; }
+  .car-nav:hover { box-shadow: var(--shadow-hover); transform: translateY(-50%) scale(1.06); filter: none; }
+  .car-nav:active { transform: translateY(-50%) scale(.98); }
+  .car-nav.prev { left: 10px; }
+  .car-nav.next { right: 10px; }
+  .car-indicator { text-align: center; font-size: 11px; font-weight: 600; color: var(--muted); letter-spacing: .04em; }
+  @media (max-width: 820px) { .carousel { padding: 0 16px 14px; } .car-nav { position: static; transform: none; } }
 
   /* ── cards ── */
-  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow); transition: transform .18s ease, box-shadow .18s ease; animation: cardIn .45s ease both; }
+  .card:hover { transform: translateY(-3px); box-shadow: var(--shadow-hover); }
+  @keyframes cardIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+  .grid .card:nth-child(2){animation-delay:.05s} .grid .card:nth-child(3){animation-delay:.1s}
+  .grid .card:nth-child(4){animation-delay:.15s} .grid .card:nth-child(5){animation-delay:.2s}
+  .grid .card:nth-child(6){animation-delay:.25s} .grid .card:nth-child(7){animation-delay:.3s}
+  .grid .card:nth-child(8){animation-delay:.35s} .grid .card:nth-child(9){animation-delay:.4s}
   .card.span2 { grid-column: span 2; }
   .card.span3 { grid-column: span 3; }
-  .card-header { padding: 10px 14px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; }
+  .card-header { padding: 13px 18px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 9px; }
   .card-header .tag { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; padding: 2px 7px; border-radius: 4px; }
-  .tag-ingestion { background: #1e3a5f; color: #60a5fa; }
-  .tag-who      { background: #1a3a2a; color: #4ade80; }
-  .tag-vision   { background: #3b2a1a; color: #fb923c; }
-  .tag-scenario { background: #2d1a3b; color: #c084fc; }
-  .tag-claude   { background: #3b1a2a; color: #f472b6; }
-  .tag-inventory{ background: #1a2a3b; color: #67e8f9; }
-  .tag-fetch    { background: #2a1a1a; color: #fca5a5; }
-  .tag-alerts   { background: #3b2a0a; color: #fde047; }
-  .card-header .title { font-size: 12px; color: var(--text); }
-  .card-header .source { margin-left: auto; font-size: 10px; color: var(--muted); }
-  .card-body { padding: 12px 14px; }
+  .tag-ingestion { background: #dbeafe; color: #1d4ed8; }
+  .tag-who      { background: #dcfce7; color: #15803d; }
+  .tag-vision   { background: #ffedd5; color: #c2410c; }
+  .tag-scenario { background: #f3e8ff; color: #7e22ce; }
+  .tag-claude   { background: #fce7f3; color: #be185d; }
+  .tag-inventory{ background: #cffafe; color: #0e7490; }
+  .tag-fetch    { background: #fee2e2; color: #b91c1c; }
+  .tag-alerts   { background: #fef9c3; color: #a16207; }
+  .tag-arize    { background: #ede9fe; color: #6d28d9; }
+
+  /* ── arize decision chain ── */
+  .arz-chain { display: flex; flex-direction: column; gap: 0; }
+  .arz-step { display: flex; align-items: flex-start; gap: 12px; padding: 10px 0; animation: cardIn .4s ease both; }
+  .arz-icon { flex-shrink: 0; width: 34px; height: 34px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 17px; background: var(--bg); border: 1px solid var(--border); }
+  .arz-body { min-width: 0; }
+  .arz-label { font-size: 12px; font-weight: 700; color: var(--text); text-transform: uppercase; letter-spacing: .04em; display: flex; align-items: center; gap: 8px; }
+  .arz-strength { font-size: 10px; font-weight: 600; color: var(--accent); background: rgba(99,91,255,.10); padding: 1px 7px; border-radius: 99px; text-transform: none; letter-spacing: 0; }
+  .arz-detail { font-size: 12px; color: var(--muted); line-height: 1.5; margin-top: 3px; }
+  .arz-detail b { color: var(--text); font-weight: 700; }
+  .arz-link { width: 2px; height: 14px; margin-left: 16px; background: linear-gradient(var(--accent), var(--accent2)); opacity: .35; }
+  .arz-conf { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+  .arz-conf-row { display: flex; justify-content: space-between; font-size: 12px; font-weight: 700; color: var(--text); margin-bottom: 6px; }
+  .arz-conf-track { height: 8px; border-radius: 99px; background: var(--bg); overflow: hidden; border: 1px solid var(--border); }
+  .arz-conf-fill { height: 100%; border-radius: 99px; background: linear-gradient(90deg, var(--accent), var(--accent2)); transition: width .6s ease; }
+  .card-header .title { font-size: 13px; font-weight: 700; color: var(--text); letter-spacing: -.01em; }
+  .card-header .source { margin-left: auto; font-size: 10px; color: var(--muted); font-weight: 500; white-space: nowrap; }
+  .card-body { padding: 14px 18px; }
 
   /* ── kv rows ── */
-  .kv { display: flex; justify-content: space-between; padding: 3px 0; border-bottom: 1px solid #1f2233; }
+  .kv { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
   .kv:last-child { border: none; }
-  .kv .k { color: var(--muted); }
-  .kv .v { color: var(--text); font-weight: 500; }
+  .kv .k { color: var(--muted); font-weight: 500; white-space: nowrap; }
+  .kv .v { color: var(--text); font-weight: 600; text-align: right; }
   .kv .v.ok     { color: var(--green); }
   .kv .v.warn   { color: var(--yellow); }
   .kv .v.low    { color: var(--orange); }
@@ -70,7 +135,7 @@
   .kv .v.low-risk { color: var(--green); }
 
   /* ── vision image ── */
-  .vision-img { width: 100%; max-height: 200px; object-fit: cover; border-radius: 6px; margin-bottom: 10px; background: #111; }
+  .vision-img { width: 100%; max-height: 200px; object-fit: cover; border-radius: 10px; margin-bottom: 10px; background: #0f172a; }
   .vision-counts { display: flex; gap: 8px; margin-top: 8px; }
   .hospital-count { flex: 1; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px; text-align: center; }
   .hospital-count .name { font-size: 10px; color: var(--muted); }
@@ -79,42 +144,111 @@
 
   /* ── reasoning ── */
   .risk-badge { display: inline-block; padding: 4px 12px; border-radius: 6px; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 10px; }
-  .risk-critical { background: #450a0a; color: #fca5a5; }
-  .risk-high     { background: #431407; color: #fdba74; }
-  .risk-medium   { background: #422006; color: #fde68a; }
-  .risk-low      { background: #052e16; color: #86efac; }
+  .risk-critical { background: #fee2e2; color: #b91c1c; }
+  .risk-high     { background: #ffedd5; color: #c2410c; }
+  .risk-medium   { background: #fef9c3; color: #a16207; }
+  .risk-low      { background: #dcfce7; color: #15803d; }
   .risk-unknown  { background: var(--border); color: var(--muted); }
-  .reasoning-text { color: var(--muted); line-height: 1.5; margin: 8px 0; font-size: 12px; }
-  .priority-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-  .priority-tag { background: var(--accent); color: #fff; font-size: 11px; padding: 3px 8px; border-radius: 4px; }
+  .reasoning-text { color: var(--text); opacity: .82; line-height: 1.65; margin: 10px 0; font-size: 12.5px; }
+  .priority-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 2px; }
+  .priority-tag { background: rgba(99,91,255,.10); color: var(--accent); font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 99px; }
+
+  /* ── ingestion source footer (redis key + what we need) ── */
+  .src-foot { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--border); display: flex; flex-direction: column; gap: 6px; }
+  .src-foot .row { display: flex; align-items: baseline; gap: 8px; font-size: 11px; line-height: 1.4; }
+  .src-foot .row .lbl { color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; flex-shrink: 0; }
+  .src-foot code { font-family: 'SF Mono', ui-monospace, Menlo, monospace; font-size: 10.5px; color: var(--accent); background: rgba(99,91,255,.08); padding: 1px 6px; border-radius: 5px; }
+  .src-foot .need-tags { display: flex; flex-wrap: wrap; gap: 5px; }
+  .src-foot .need-tag { background: rgba(0,212,255,.10); color: #0073a6; font-size: 10.5px; font-weight: 600; padding: 2px 8px; border-radius: 99px; }
+
+  /* ── animated weather hero ── */
+  .wx-hero { display: flex; align-items: center; gap: 16px; padding: 6px 4px 14px; margin-bottom: 8px; border-bottom: 1px solid var(--border); }
+  .wx-ico { width: 64px; height: 64px; flex-shrink: 0; }
+  .wx-svg { width: 64px; height: 64px; overflow: visible; }
+  .wx-svg * { transform-box: fill-box; transform-origin: center; }
+  .wx-cloud { fill: #c2cee0; }
+  .wx-temp { display: flex; flex-direction: column; line-height: 1; }
+  .wx-temp .num { font-size: 30px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+  .wx-temp .num .deg { font-size: 16px; font-weight: 600; color: var(--muted); margin-left: 2px; }
+  .wx-temp .cond { margin-top: 6px; font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+  /* sun */
+  .wx-sun .core { fill: #ffb84d; animation: wxPulse 2.6s ease-in-out infinite; }
+  .wx-sun .rays { stroke: #ffc861; stroke-width: 3; stroke-linecap: round; animation: wxSpin 11s linear infinite; }
+  /* cloud bob */
+  .wx-cloudy .wx-cloud { animation: wxBob 3.2s ease-in-out infinite; }
+  /* fog drift */
+  .wx-fog .fogline { stroke: #aab6c9; stroke-width: 3.5; stroke-linecap: round; animation: wxDrift 3.4s ease-in-out infinite; }
+  .wx-fog .fogline:nth-child(2) { animation-delay: .5s; }
+  .wx-fog .fogline:nth-child(3) { animation-delay: 1s; }
+  /* rain */
+  .wx-rain .drop { fill: #5b9bff; animation: wxFall 1.1s linear infinite; }
+  .wx-rain .drop:nth-child(3) { animation-delay: .35s; }
+  .wx-rain .drop:nth-child(4) { animation-delay: .7s; }
+  /* snow */
+  .wx-snow .flake { fill: #d6e2f2; stroke: #b6c6dd; stroke-width: 1; animation: wxFall 2.2s linear infinite; }
+  .wx-snow .flake:nth-child(3) { animation-delay: .7s; }
+  .wx-snow .flake:nth-child(4) { animation-delay: 1.4s; }
+  /* storm */
+  .wx-storm .bolt { fill: #ffb020; animation: wxFlash 1.8s steps(1) infinite; }
+  @keyframes wxSpin  { to { transform: rotate(360deg); } }
+  @keyframes wxPulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: .82; transform: scale(.92); } }
+  @keyframes wxBob   { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
+  @keyframes wxDrift { 0%,100% { transform: translateX(-3px); opacity: .55; } 50% { transform: translateX(3px); opacity: 1; } }
+  @keyframes wxFall  { 0% { transform: translateY(-4px); opacity: 0; } 25% { opacity: 1; } 100% { transform: translateY(14px); opacity: 0; } }
+  @keyframes wxFlash { 0%,92%,100% { opacity: .25; } 94%,98% { opacity: 1; } }
+
+  /* ── one-time card entrance ── */
+  @keyframes cardIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+  .card { animation: cardIn .5s cubic-bezier(.22,.61,.36,1) both; }
+  @media (prefers-reduced-motion: reduce) {
+    .card, .wx-sun .core, .wx-sun .rays, .wx-cloudy .wx-cloud, .wx-fog .fogline,
+    .wx-rain .drop, .wx-snow .flake, .wx-storm .bolt { animation: none !important; }
+  }
+
+  /* ── reusable field label + value block (cleaner long-text fields) ── */
+  .field-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 12px 0 4px; }
+  .field-text { color: var(--text); font-size: 12.5px; line-height: 1.6; opacity: .9; }
+  .meta-line { margin-top: 10px; font-size: 11px; color: var(--muted); }
 
   /* ── scenario supplies ── */
-  .supply-list { list-style: none; }
-  .supply-list li { padding: 4px 0; color: var(--text); }
-  .supply-list li::before { content: '→ '; color: var(--purple); }
+  .supply-list { list-style: none; margin: 4px 0 6px; }
+  .supply-list li { padding: 5px 0; color: var(--text); font-size: 13px; font-weight: 500; display: flex; align-items: center; gap: 9px; }
+  .supply-list li::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--accent2); flex-shrink: 0; }
 
   /* ── inventory table ── */
-  .inv-grid { display: grid; grid-template-columns: auto repeat(3, 1fr); gap: 1px; background: var(--border); border-radius: 6px; overflow: hidden; font-size: 12px; }
-  .inv-grid .cell { background: var(--surface); padding: 6px 10px; }
-  .inv-grid .cell.header { background: var(--bg); color: var(--muted); font-size: 10px; text-transform: uppercase; }
-  .inv-grid .cell.item-name { color: var(--muted); }
+  .inv-grid { display: grid; grid-template-columns: auto repeat(2, 1fr); gap: 1px; background: var(--border); border-radius: 10px; overflow: hidden; font-size: 12px; }
+  .inv-grid .cell { background: var(--surface); padding: 9px 12px; line-height: 1.35; font-variant-numeric: tabular-nums; }
+  .inv-grid .cell.header { background: var(--bg); color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; line-height: 1.3; }
+  .inv-grid .cell.item-name { color: var(--text); font-weight: 600; display: flex; align-items: center; }
+  .inv-grid .cell .inv-val { display: flex; align-items: baseline; gap: 5px; }
+  .inv-grid .cell .inv-status { color: var(--muted); font-size: 10px; text-transform: capitalize; }
+  .inv-grid .cell .inv-spare { color: var(--accent); font-size: 10px; margin-top: 2px; }
+  .inv-grid .cell [class^="status-"] { font-weight: 700; font-size: 14px; }
   .status-ok { color: var(--green); }
   .status-warn { color: var(--yellow); }
   .status-low { color: var(--orange); }
   .status-critical { color: var(--red); }
 
   /* ── transfers ── */
-  .transfer { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; margin-bottom: 6px; display: flex; align-items: center; gap: 10px; }
+  .transfer { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 7px; display: flex; align-items: center; gap: 10px; }
   .transfer .flow { color: var(--text); }
   .transfer .detail { color: var(--muted); font-size: 11px; margin-left: auto; }
-  .transfer .status-pill { font-size: 10px; padding: 2px 7px; border-radius: 4px; background: #052e16; color: #86efac; }
+  .transfer .status-pill { font-size: 10px; padding: 2px 7px; border-radius: 4px; background: #dcfce7; color: #15803d; }
 
   /* ── action bar ── */
-  .actions { display: flex; gap: 10px; padding: 0 24px 18px; flex-wrap: wrap; align-items: center; }
-  button { background: var(--accent); color: #fff; border: none; padding: 9px 18px; border-radius: 7px; font-family: inherit; font-size: 13px; cursor: pointer; transition: opacity .15s; }
-  button:hover { opacity: .85; }
-  button.secondary { background: var(--surface); border: 1px solid var(--border); color: var(--text); }
-  button:disabled { opacity: .4; cursor: default; }
+  .actions { display: flex; gap: 10px; padding: 0 24px 18px; flex-wrap: wrap; align-items: center; justify-content: center; }
+  button { background: var(--accent); color: #fff; border: none; padding: 10px 18px; border-radius: 8px; font-family: inherit; font-size: 13px; font-weight: 600; cursor: pointer; box-shadow: 0 4px 8px rgba(99,91,255,.28), 0 1px 2px rgba(10,37,64,.10); transition: transform .15s, box-shadow .15s, filter .15s; }
+  button:hover { transform: translateY(-1px); filter: brightness(1.06); box-shadow: 0 7px 14px rgba(99,91,255,.32), 0 3px 6px rgba(10,37,64,.12); }
+  button:active { transform: translateY(0); }
+  button.secondary { background: var(--surface); border: 1px solid var(--border); color: var(--accent); box-shadow: var(--shadow); }
+  button.secondary:hover { box-shadow: var(--shadow-hover); filter: none; }
+  button:disabled { opacity: .45; cursor: default; transform: none; box-shadow: none; }
+
+  /* monochrome action buttons */
+  .actions button { background: #ffffff; color: #111111; border: 1px solid #111111; box-shadow: none; font-weight: 600; }
+  .actions button:hover { background: #111111; color: #ffffff; filter: none; box-shadow: none; transform: translateY(-1px); }
+  .actions button:active { transform: translateY(0); }
+  .actions button:disabled { background: #ffffff; color: #9aa0a6; border-color: #d0d0d0; }
 
   /* ── empty state ── */
   .empty { color: var(--muted); font-style: italic; padding: 10px 0; }
@@ -124,66 +258,55 @@
   @keyframes spin { to { transform: rotate(360deg); } }
 
   /* ── toast ── */
-  #toast { position: fixed; bottom: 24px; right: 24px; background: var(--surface); border: 1px solid var(--border); padding: 12px 18px; border-radius: 8px; font-size: 12px; opacity: 0; transition: opacity .3s; pointer-events: none; max-width: 320px; }
-  #toast.show { opacity: 1; }
+  #toast { position: fixed; bottom: 24px; right: 24px; background: var(--surface); border: 1px solid var(--border); padding: 12px 18px; border-radius: 12px; font-size: 12px; opacity: 0; transform: translateY(10px); transition: opacity .3s, transform .3s; pointer-events: none; max-width: 320px; box-shadow: var(--shadow-hover); }
+  #toast.show { opacity: 1; transform: translateY(0); }
 
   /* ── no-redis banner ── */
-  .no-redis { background: #1a0a0a; border: 1px solid #450a0a; border-radius: 8px; padding: 16px; margin: 18px 24px 0; color: #fca5a5; }
+  .no-redis { background: #fef2f2; border: 1px solid #fecaca; border-radius: 12px; padding: 16px; margin: 18px 24px 0; color: #b91c1c; }
   .no-redis strong { color: var(--red); }
 
   /* ── negotiation timeline ── */
   .neg-event { display:flex; align-items:flex-start; gap:8px; padding:5px 0; border-bottom:1px solid var(--border); font-size:12px; }
   .neg-event:last-child { border:none; }
   .neg-chip { flex-shrink:0; font-size:10px; font-weight:700; text-transform:uppercase; padding:2px 7px; border-radius:4px; letter-spacing:.05em; }
-  .chip-shortfall_detected,.chip-requesting { background:#1a0a0a; color:#f87171; }
-  .chip-collecting_offers,.chip-evaluating { background:#1a1a0a; color:#facc15; }
-  .chip-awaiting_approval { background:#1a0a1a; color:#c084fc; }
-  .chip-proposing,.chip-settling { background:#0a1a0a; color:#4ade80; }
-  .chip-confirmed,.chip-ordered { background:#052e16; color:#4ade80; }
-  .chip-failed { background:#450a0a; color:#fca5a5; }
-  .chip-ordering { background:#1a1200; color:#fb923c; }
-  .chip-decision_sent { background:#1a1a2a; color:#818cf8; }
-  .chip-triggered { background:#1a1200; color:#fb923c; }
+  .chip-shortfall_detected,.chip-requesting { background:#fee2e2; color:#b91c1c; }
+  .chip-collecting_offers,.chip-evaluating { background:#fef9c3; color:#a16207; }
+  .chip-awaiting_approval { background:#f3e8ff; color:#7e22ce; }
+  .chip-proposing,.chip-settling { background:#dcfce7; color:#15803d; }
+  .chip-confirmed,.chip-ordered { background:#dcfce7; color:#15803d; }
+  .chip-failed { background:#fee2e2; color:#b91c1c; }
+  .chip-ordering { background:#ffedd5; color:#c2410c; }
+  .chip-decision_sent { background:#e0e7ff; color:#4338ca; }
+  .chip-triggered { background:#ffedd5; color:#c2410c; }
+  .chip-sent { background:#e0e7ff; color:#4338ca; }
+  .chip-request_sent,.chip-proposal_sent { background:#ffedd5; color:#c2410c; }
+  .chip-request_received,.chip-proposal_received { background:#e0f2fe; color:#0369a1; }
+  .chip-offer_made,.chip-leg_accepted { background:#dcfce7; color:#15803d; }
+  .chip-offer_declined { background:#fee2e2; color:#b91c1c; }
+  #neg-timeline { max-height: 540px; overflow-y: auto; }
 
-  .approval-banner { background:#1a0a1a; border:1px solid #7c3aed; border-radius:8px; padding:14px; margin-bottom:10px; }
-  .approval-banner h3 { color:#c084fc; margin-bottom:8px; font-size:13px; }
-  .approval-banner .approval-detail { color:#8892a4; font-size:12px; margin-bottom:12px; line-height:1.5; }
+  .approval-banner { background:#faf5ff; border:1px solid #d8b4fe; border-radius:12px; padding:14px; margin-bottom:10px; animation: cardIn .4s ease both; }
+  .approval-banner h3 { color:#7e22ce; margin-bottom:8px; font-size:13px; }
+  .approval-banner .approval-detail { color:var(--muted); font-size:12px; margin-bottom:12px; line-height:1.5; }
   .btn-approve { background:#16a34a; color:#fff; border:none; padding:8px 16px; border-radius:6px; cursor:pointer; font-size:13px; margin-right:6px; }
   .btn-order   { background:#92400e; color:#fff; border:none; padding:8px 16px; border-radius:6px; cursor:pointer; font-size:13px; margin-right:6px; }
   .btn-reject-dec { background:#7f1d1d; color:#fff; border:none; padding:8px 16px; border-radius:6px; cursor:pointer; font-size:13px; }
   .bureau-status { font-size:11px; color:var(--muted); display:flex; align-items:center; gap:6px; }
   .bureau-dot { width:7px; height:7px; border-radius:50%; background:var(--red); }
-  .bureau-dot.running { background:var(--green); }
+  .bureau-dot.running { background:var(--green); animation: pulseDot 2s ease-out infinite; }
 </style>
 </head>
 <body>
 
 <!-- Header -->
 <header>
-  <h1>Baymax Pipeline</h1>
-  <span class="region-badge">{{ region }}</span>
-  <div class="right">
-    <span class="redis-dot" id="redis-dot"></span>
-    <span id="redis-label" style="font-size:11px;color:var(--muted)">Redis</span>
-    <span class="ts" id="ts">–</span>
-  </div>
+  <img class="deco deco-left" src="{{ url_for('static', filename='medical-icons.png') }}" alt="" aria-hidden="true">
+  <img class="deco deco-right" src="{{ url_for('static', filename='medical-icons.png') }}" alt="" aria-hidden="true">
+  <img class="logo" src="{{ url_for('static', filename='baymax-logo.png') }}" alt="Baymax logo">
+  <h1>Baymax</h1>
 </header>
 
 <!-- Pipeline flow -->
-<div class="pipeline">
-  <div class="stage" id="stage-weather"><span class="dot"></span><span class="label">Weather</span></div>
-  <span class="arrow">→</span>
-  <div class="stage" id="stage-illness"><span class="dot"></span><span class="label">Illness (mock)</span></div>
-  <span class="arrow">→</span>
-  <div class="stage" id="stage-who"><span class="dot"></span><span class="label">WHO</span></div>
-  <span class="arrow">→</span>
-  <div class="stage" id="stage-vision"><span class="dot"></span><span class="label">Vision</span></div>
-  <span class="arrow">→</span>
-  <div class="stage" id="stage-claude"><span class="dot"></span><span class="label">Claude</span></div>
-  <span class="arrow">→</span>
-  <div class="stage" id="stage-fetch"><span class="dot"></span><span class="label">Fetch.ai</span></div>
-</div>
-
 <!-- No-Redis banner (shown when Redis is down) -->
 <div class="no-redis" id="no-redis-banner" style="display:none">
   <strong>Redis not reachable.</strong> Start Redis to see live data:
@@ -195,16 +318,38 @@
 <div class="actions" style="padding-top:18px;">
   <button id="btn-who" onclick="refreshWho()">↻ Refresh WHO + Claude</button>
   <button id="btn-capture" class="secondary" onclick="triggerCapture()">📷 Capture Both</button>
-  <button id="btn-negotiate" class="secondary" onclick="runNegotiation()" style="background:#1a1a3b;border-color:#4f46e5;color:#818cf8">⚡ Run Fetch.ai Negotiation</button>
-  <button id="btn-bureau" class="secondary" onclick="startBureau()" style="background:#0a1a0a;border-color:#166534;color:#4ade80">▶ Start Bureau</button>
+  <button id="btn-negotiate" class="secondary" onclick="runNegotiation()">⚡ Run Fetch.ai Negotiation</button>
+  <button id="btn-bureau" class="secondary" onclick="startBureau()">▶ Start Bureau</button>
   <div class="bureau-status">
     <span class="bureau-dot" id="bureau-dot"></span>
     <span id="bureau-label">Bureau stopped</span>
+  </div>
+  <div class="status-pill">
+    <span class="redis-dot" id="redis-dot"></span>
+    <span id="redis-label">Redis</span>
   </div>
 </div>
 
 <!-- Main grid -->
 <div class="grid">
+
+  <!-- VISION card — two laptop cameras (centered hero) -->
+  <div class="card span3">
+    <div class="card-header">
+      <span class="tag tag-vision">VISION</span>
+      <span class="title">Camera Inventory</span>
+      <span class="source">Claude Vision · 2 laptops → Redis</span>
+    </div>
+    <div class="card-body" id="card-vision">
+      <div class="empty">No captures yet — click 📷 Capture</div>
+    </div>
+  </div>
+
+</div><!-- /grid -->
+
+<div class="carousel">
+  <button class="car-nav prev" onclick="carScroll(-1)" aria-label="Previous">‹</button>
+  <div class="car-track" id="car-track">
 
   <!-- WEATHER card -->
   <div class="card">
@@ -223,7 +368,7 @@
     <div class="card-header">
       <span class="tag tag-ingestion">INGESTION</span>
       <span class="title">Illness Levels</span>
-      <span class="source">mock_illness_feed.json</span>
+      <span class="source">CDC feed</span>
     </div>
     <div class="card-body" id="card-illness">
       <div class="empty">Waiting for data…</div>
@@ -234,23 +379,11 @@
   <div class="card">
     <div class="card-header">
       <span class="tag tag-who">WHO</span>
-      <span class="title">Historical Disease Data</span>
-      <span class="source">disease.sh / WHO/JHU</span>
+      <span class="title">CDC-Flagged Illness</span>
+      <span class="source">disease.sh · CDC</span>
     </div>
     <div class="card-body" id="card-who">
       <div class="empty">Click ↻ Refresh WHO to fetch…</div>
-    </div>
-  </div>
-
-  <!-- VISION card — two laptop cameras -->
-  <div class="card span2">
-    <div class="card-header">
-      <span class="tag tag-vision">VISION</span>
-      <span class="title">Camera Inventory</span>
-      <span class="source">Claude Vision · 2 laptops → Redis</span>
-    </div>
-    <div class="card-body" id="card-vision">
-      <div class="empty">No captures yet — click 📷 Capture</div>
     </div>
   </div>
 
@@ -271,7 +404,7 @@
     <div class="card-header">
       <span class="tag tag-scenario">SCENARIO</span>
       <span class="title">Matched Scenario</span>
-      <span class="source">scenario:heatstroke</span>
+      <span class="source">scenario:flu_surge</span>
     </div>
     <div class="card-body" id="card-scenario">
       <div class="empty">No scenario data in Redis…</div>
@@ -290,19 +423,25 @@
     </div>
   </div>
 
-  <!-- TRANSFERS card -->
-  <div class="card">
+  <!-- ARIZE card — full-width slide of its own -->
+  <div class="card car-full">
     <div class="card-header">
-      <span class="tag tag-fetch">FETCH.AI</span>
-      <span class="title">Recent Transfers</span>
-      <span class="source">transfers stream</span>
+      <span class="tag tag-arize">ARIZE</span>
+      <span class="title">Decision Chain · Observability</span>
+      <span class="source">tracks/arize/traces</span>
     </div>
-    <div class="card-body" id="card-transfers">
-      <div class="empty">No transfers logged yet…</div>
+    <div class="card-body" id="card-arize">
+      <div class="empty">No traces yet — run the Arize track to populate the decision chain.</div>
     </div>
   </div>
 
-  <!-- FETCH.AI NEGOTIATION LIVE card -->
+  </div><!-- /car-track -->
+  <button class="car-nav next" onclick="carScroll(1)" aria-label="Next">›</button>
+  <div class="car-indicator" id="car-indicator"></div>
+</div><!-- /carousel -->
+
+<!-- FETCH.AI NEGOTIATION LIVE — full-width, below the carousel -->
+<div class="grid">
   <div class="card span3" id="card-negotiate-live-wrap">
     <div class="card-header">
       <span class="tag tag-fetch">FETCH.AI NEGOTIATION LIVE</span>
@@ -322,20 +461,7 @@
       </div>
     </div>
   </div>
-
-  <!-- ALERTS card -->
-  <div class="card span3">
-    <div class="card-header">
-      <span class="tag tag-alerts">ALERTS</span>
-      <span class="title">Shortfall Alerts</span>
-      <span class="source">alerts:log stream</span>
-    </div>
-    <div class="card-body" id="card-alerts">
-      <div class="empty">No alerts…</div>
-    </div>
-  </div>
-
-</div><!-- /grid -->
+</div>
 
 <div id="toast"></div>
 
@@ -351,11 +477,17 @@ function poll() {
       render(state);
     })
     .catch(() => {});
+
+  // Arize decision-chain traces (separate endpoint, on-disk traces).
+  fetch('/api/arize')
+    .then(r => r.json())
+    .then(d => renderArize((d && d.traces) || {}))
+    .catch(() => {});
 }
 
 function render(s) {
   // header
-  document.getElementById('ts').textContent = s.timestamp ? s.timestamp.replace('T',' ').slice(0,19)+' UTC' : '–';
+  { const tsEl = document.getElementById('ts'); if (tsEl) tsEl.textContent = s.timestamp ? s.timestamp.replace('T',' ').slice(0,19)+' UTC' : '–'; }
   const dot = document.getElementById('redis-dot');
   const lbl = document.getElementById('redis-label');
   if (s.redis_connected) {
@@ -386,9 +518,10 @@ function render(s) {
   // pipeline stage indicators
   const fc = s.forecast;
   const items = fc && fc.items ? fc.items : {};
+  if (fc && fc.region) _focusRegion = fc.region;
   setStage('weather', items.weather_temperature_c != null ? 'ok' : (s.redis_connected ? 'warn' : 'err'));
   setStage('illness', items.illness ? 'ok' : (s.redis_connected ? 'warn' : 'err'));
-  setStage('who',     items.who_covid_30d_cases != null ? 'ok' : 'warn');
+  setStage('who',     items.who_focus_illness != null ? 'ok' : 'warn');
   setStage('vision',  s.vision_image_available ? 'ok' : 'warn');
   setStage('claude',  s.reasoning ? 'ok' : 'warn');
 
@@ -406,10 +539,6 @@ function render(s) {
   renderScenario(s.scenario);
   // inventory
   renderInventory(s.inventory, s.surplus, s.meta);
-  // transfers
-  renderTransfers(s.transfers);
-  // alerts
-  renderAlerts(s.alerts);
 
   // approval banner from polled state
   if (s.awaiting_approval && s.awaiting_approval.length > 0) {
@@ -428,6 +557,86 @@ function render(s) {
   }
 }
 
+// ARIZE — observability decision chain from on-disk traces
+let _arizeSig = null;
+function renderArize(t) {
+  const el = document.getElementById('card-arize');
+  if (!el) return;
+  // Skip rebuild (and re-animation) when the traces haven't changed.
+  const sig = JSON.stringify(t || {});
+  if (sig === _arizeSig) return;
+  _arizeSig = sig;
+  const keys = Object.keys(t || {});
+  if (keys.length === 0) {
+    el.innerHTML = '<div class="empty">No traces yet — run the Arize track (arize/src/demo_trace.py) to populate the decision chain.</div>';
+    return;
+  }
+  const inv = t.inventory_low, fc = t.forecast_signal, rz = t.reasoning_decision,
+        tr = t.transfer_recommendation, dc = t.decision_chain, out = t.decision_outcome;
+  const pct = (x) => (x == null ? '–' : Math.round(x * 100) + '%');
+  const conf = dc && dc.decision_confidence != null ? dc.decision_confidence : null;
+
+  const step = (icon, label, body, strength) => `
+    <div class="arz-step">
+      <div class="arz-icon">${icon}</div>
+      <div class="arz-body">
+        <div class="arz-label">${label}${strength != null ? ` <span class="arz-strength">signal ${pct(strength)}</span>` : ''}</div>
+        <div class="arz-detail">${body}</div>
+      </div>
+    </div>`;
+
+  const steps = [];
+  if (inv) steps.push(step('📉', 'Inventory low',
+    `${escHtml(inv.item || '')} at ${escHtml(inv.hospital_id || '')} — <b>${inv.current_pct ?? '–'}%</b> (${escHtml(inv.status || '')})`,
+    dc ? dc.inventory_signal_strength : null));
+  if (fc) steps.push(step('📈', 'Forecast signal',
+    `+${fc.predicted_demand_increase_pct ?? '–'}% demand in ${escHtml(fc.region || '')} — ${escHtml(fc.reason || '')}`,
+    dc ? dc.forecast_signal_strength : null));
+  if (rz) steps.push(step('🧠', 'Reasoning decision',
+    `<b>${escHtml((rz.severity || '').toUpperCase())}</b> → ${escHtml(rz.recommended_action || '')}. ${escHtml(rz.reasoning || '')}`));
+  if (tr) steps.push(step('🚚', 'Transfer recommendation',
+    `${tr.transfer_quantity ?? '–'} × ${escHtml(tr.item || '')} · ${escHtml(tr.source_hospital || '')} → ${escHtml(tr.destination_hospital || '')} · ETA ${tr.eta_minutes ?? '–'} min`));
+  if (out) steps.push(step(out.outcome === 'successful_transfer' ? '✅' : 'ℹ️', 'Outcome',
+    `recommended <b>${out.recommended_quantity ?? '–'}</b> vs fulfilled <b>${out.actual_quantity ?? '–'}</b> — ${escHtml(out.improvement_note || '')}`));
+
+  const confBar = conf != null ? `
+    <div class="arz-conf">
+      <div class="arz-conf-row"><span>Decision confidence</span><span>${pct(conf)}</span></div>
+      <div class="arz-conf-track"><div class="arz-conf-fill" style="width:${pct(conf)}"></div></div>
+    </div>` : '';
+
+  el.innerHTML = `<div class="arz-chain">${steps.join('<div class="arz-link"></div>')}</div>${confBar}`;
+}
+
+// CAROUSEL — paginate the data cards so each slide fits its own content
+let _carPages = [], _carPage = 0;
+function buildCarPages() {
+  const track = document.getElementById('car-track');
+  if (!track) return;
+  const cards = Array.from(track.children).filter(c => c.classList.contains('card'));
+  _carPages = [];
+  let k = 0;
+  while (k < cards.length) {
+    if (cards[k].classList.contains('car-full')) {  // full-width card → own slide
+      _carPages.push([cards[k]]);
+      k += 1;
+    } else {
+      _carPages.push(cards.slice(k, k + 2));
+      k += 2;
+    }
+  }
+  showCarPage(_carPage);
+}
+function showCarPage(i) {
+  if (!_carPages.length) return;
+  _carPage = Math.max(0, Math.min(i, _carPages.length - 1));
+  const visible = new Set(_carPages[_carPage]);
+  _carPages.forEach(pg => pg.forEach(c => { c.style.display = visible.has(c) ? '' : 'none'; }));
+  const ind = document.getElementById('car-indicator');
+  if (ind) ind.textContent = (_carPage + 1) + ' / ' + _carPages.length;
+}
+function carScroll(dir) { showCarPage(_carPage + dir); }
+
 function setStage(id, cls) {
   const el = document.getElementById('stage-' + id);
   if (el) el.className = 'stage ' + cls;
@@ -438,24 +647,121 @@ function kv(k, v, cls) {
   return `<div class="kv"><span class="k">${k}</span><span class="v ${cls}">${v ?? '–'}</span></div>`;
 }
 
+// Region of the active forecast record (set each poll) — drives the redis-key footer.
+let _focusRegion = 'san_francisco';
+
+// Ingestion footer: which Redis key the card reads + (optionally) the focus
+// illness and the supplies it implies ("what we need").
+function srcFoot(redisKey, items, withNeed) {
+  const rows = [`<div class="row"><span class="lbl">redis</span><code>${redisKey}</code></div>`];
+  if (withNeed) {
+    const focus = items.who_focus_illness;
+    const need = items.who_required_supplies || [];
+    if (focus) {
+      const lvl = items.who_focus_level ? ` (${items.who_focus_level})` : '';
+      rows.push(`<div class="row"><span class="lbl">focus</span><span>${escHtml(focus)}${lvl}</span></div>`);
+    }
+    if (need.length) {
+      rows.push(`<div class="row"><span class="lbl">we need</span><span class="need-tags">` +
+        need.map(s => `<span class="need-tag">${escHtml(s)}</span>`).join('') + `</span></div>`);
+    }
+  }
+  return `<div class="src-foot">${rows.join('')}</div>`;
+}
+
 function statusClass(status) {
   const m = {ok:'ok', warning:'warn', low:'low', critical:'critical', warning_:'warn'};
   return m[status] || '';
 }
 
+// Turn snake_case status strings into readable text ("awaiting_live_data" → "awaiting live data").
+function humanize(s) { return (s == null ? '' : String(s)).replace(/_/g, ' '); }
+
+// Friendly hospital labels shared across cards.
+const HOSP_NAMES = { hospital_a: 'Hospital A', hospital_b: 'Hospital B', hospital_c: 'Hospital C' };
+function hospName(id) { return HOSP_NAMES[id] || id || '–'; }
+
+// disease.sh flu weeks arrive as "2022 - 16/52" → render as "wk 16 · 2022".
+function formatWhoDate(d) {
+  if (!d) return '–';
+  const m = String(d).match(/^(\d{4})\s*-\s*(\d+)\/\d+$/);
+  return m ? `wk ${m[2]} · ${m[1]}` : d;
+}
+
 // WEATHER
+// Map an Open-Meteo weather code to an animated scene kind.
+function weatherKind(code) {
+  if (code == null) return 'cloudy';
+  if (code === 0) return 'sun';
+  if (code <= 3) return 'cloudy';
+  if (code <= 49) return 'fog';
+  if (code <= 69) return 'rain';
+  if (code <= 79) return 'snow';
+  if (code <= 84) return 'rain';
+  return 'storm';
+}
+
+// A small CSS-animated SVG that matches the current conditions.
+function weatherHero(code, t, label) {
+  const cloud = '<g class="wx-cloud"><circle cx="24" cy="38" r="9"/>' +
+    '<circle cx="38" cy="32" r="13"/><circle cx="47" cy="39" r="8"/>' +
+    '<rect x="22" y="38" width="27" height="9" rx="4.5"/></g>';
+  const kind = weatherKind(code);
+  let scene;
+  if (kind === 'sun') {
+    scene = '<svg class="wx-svg wx-sun" viewBox="0 0 64 64"><g class="rays">' +
+      '<line x1="32" y1="5" x2="32" y2="14"/><line x1="32" y1="50" x2="32" y2="59"/>' +
+      '<line x1="5" y1="32" x2="14" y2="32"/><line x1="50" y1="32" x2="59" y2="32"/>' +
+      '<line x1="13" y1="13" x2="19" y2="19"/><line x1="45" y1="45" x2="51" y2="51"/>' +
+      '<line x1="51" y1="13" x2="45" y2="19"/><line x1="13" y1="51" x2="19" y2="45"/></g>' +
+      '<circle class="core" cx="32" cy="32" r="12"/></svg>';
+  } else if (kind === 'fog') {
+    scene = '<svg class="wx-svg wx-fog" viewBox="0 0 64 64">' + cloud +
+      '<line class="fogline" x1="14" y1="48" x2="42" y2="48"/>' +
+      '<line class="fogline" x1="18" y1="54" x2="48" y2="54"/>' +
+      '<line class="fogline" x1="12" y1="60" x2="40" y2="60"/></svg>';
+  } else if (kind === 'rain') {
+    scene = '<svg class="wx-svg wx-rain" viewBox="0 0 64 64">' + cloud +
+      '<ellipse class="drop" cx="24" cy="50" rx="2" ry="4"/>' +
+      '<ellipse class="drop" cx="34" cy="50" rx="2" ry="4"/>' +
+      '<ellipse class="drop" cx="44" cy="50" rx="2" ry="4"/></svg>';
+  } else if (kind === 'snow') {
+    scene = '<svg class="wx-svg wx-snow" viewBox="0 0 64 64">' + cloud +
+      '<circle class="flake" cx="24" cy="50" r="2.6"/>' +
+      '<circle class="flake" cx="34" cy="50" r="2.6"/>' +
+      '<circle class="flake" cx="44" cy="50" r="2.6"/></svg>';
+  } else if (kind === 'storm') {
+    scene = '<svg class="wx-svg wx-storm" viewBox="0 0 64 64">' + cloud +
+      '<polygon class="bolt" points="34,46 27,56 32,56 29,63 40,51 34,51 38,46"/></svg>';
+  } else {
+    scene = '<svg class="wx-svg wx-cloudy" viewBox="0 0 64 64">' + cloud + '</svg>';
+  }
+  const temp = t != null
+    ? '<span class="num">' + t + '<span class="deg">°C</span></span>'
+    : '<span class="num">–</span>';
+  return '<div class="wx-hero"><div class="wx-ico">' + scene + '</div>' +
+    '<div class="wx-temp">' + temp + '<div class="cond">' + escHtml(label) + '</div></div></div>';
+}
+
+let _weatherSig = null;
 function renderWeather(items) {
   const el = document.getElementById('card-weather');
   const t = items.weather_temperature_c;
   const w = items.weather_windspeed;
   const c = items.weather_code;
-  if (t == null && w == null) { el.innerHTML = '<div class="empty">No weather data in Redis yet — run weather_agent</div>'; return; }
+  if (t == null && w == null) { _weatherSig = null; el.innerHTML = '<div class="empty">No weather data in Redis yet — run weather_agent</div>'; return; }
   const codeLabel = weatherCodeLabel(c);
+  // Only rebuild when the data changes, so the CSS animations don't restart every poll.
+  const sig = JSON.stringify([t, w, c, items.who_focus_illness, items.who_required_supplies]);
+  if (sig === _weatherSig) return;
+  _weatherSig = sig;
   el.innerHTML =
+    weatherHero(c, t, codeLabel) +
     kv('temperature', t != null ? t + ' °C' : '–') +
     kv('windspeed', w != null ? w + ' km/h' : '–') +
     kv('weather code', c != null ? c + ' (' + codeLabel + ')' : '–') +
-    kv('source', 'Open-Meteo API (no key)');
+    kv('source', 'Open-Meteo API (no key)') +
+    srcFoot('forecast:' + _focusRegion, items, false);
 }
 
 function weatherCodeLabel(code) {
@@ -478,24 +784,28 @@ function renderIllness(items) {
   }
   const levelClass = l => ({ 'Very High': 'critical', 'High': 'low', 'Moderate': 'warn', 'Low': 'ok', 'Minimal': 'ok' }[l] || '');
   el.innerHTML = Object.entries(ill).map(([k, v]) => kv(k, v, levelClass(v))).join('') +
-    kv('data source', 'mock_illness_feed.json (CDC not integrated)', 'warn');
+    kv('data source', 'CDC illness surveillance feed') +
+    srcFoot('forecast:' + _focusRegion, items, true);
 }
 
-// WHO
+// WHO — focus illness chosen by the CDC feed, surveillance from disease.sh
 function renderWho(items) {
   const el = document.getElementById('card-who');
-  if (items.who_covid_30d_cases == null) {
-    el.innerHTML = '<div class="empty">Click ↻ Refresh WHO to fetch from disease.sh</div>'; return;
+  if (items.who_focus_illness == null) {
+    el.innerHTML = '<div class="empty">Click ↻ Refresh WHO to fetch CDC-flagged illness from disease.sh</div>'; return;
   }
   const trendArrow = { rising: '↑ rising', falling: '↓ falling', stable: '→ stable', unknown: '? unknown' };
-  const pct = items.who_covid_trend_pct;
+  const trend = items.who_trend;
+  const pct = items.who_trend_pct;
+  const focus = items.who_focus_illness;
   el.innerHTML =
-    kv('covid 30d cases', (items.who_covid_30d_cases || 0).toLocaleString()) +
-    kv('covid 30d deaths', (items.who_covid_30d_deaths || 0).toLocaleString()) +
-    kv('7-day trend', (trendArrow[items.who_covid_trend] || items.who_covid_trend) + (pct ? ' (' + pct + '%)' : ''), items.who_covid_trend) +
-    kv('last data date', items.who_last_date || '–') +
-    kv('influenza', items.illness ? items.illness.influenza + ' (mock)' : 'see illness card', 'warn') +
-    kv('source', items.who_source || 'disease.sh / WHO/JHU');
+    kv('focus illness', focus + (items.who_focus_level ? ' · ' + items.who_focus_level : ''), 'critical') +
+    kv(items.who_metric_label || 'metric', items.who_metric_value ?? '–') +
+    kv(items.who_metric2_label || 'metric', items.who_metric2_value ?? '–') +
+    kv('trend', (trendArrow[trend] || trend) + (pct ? ' (' + pct + '%)' : ''), trend) +
+    kv('last data', formatWhoDate(items.who_last_date)) +
+    kv('source', items.who_source || 'disease.sh') +
+    srcFoot('forecast:' + _focusRegion, items, true);
 }
 
 // VISION — two laptop cameras, stable DOM so images never flicker on poll
@@ -504,25 +814,24 @@ let _lastCapturedAt = null;
 
 function _buildVisionLayout() {
   document.getElementById('card-vision').innerHTML = `
-    <div style="display:flex;gap:12px;align-items:flex-start">
+    <div style="display:flex;gap:48px;align-items:stretch">
       <div style="flex:1;min-width:0">
-        <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">💻 Hospital A</div>
-        <div style="background:#111;border-radius:8px;overflow:hidden;aspect-ratio:4/3;border:1px solid var(--border);display:flex;align-items:center;justify-content:center">
+        <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;text-align:center">💻 Hospital A</div>
+        <div style="background:#0f172a;border-radius:14px;overflow:hidden;aspect-ratio:16/10;border:1px solid var(--border);display:flex;align-items:center;justify-content:center;box-shadow:var(--shadow)">
           <img id="img-hospital_a" src="" alt="Hospital A" style="width:100%;height:100%;object-fit:cover;display:none">
           <span id="ph-hospital_a" style="color:var(--muted);font-size:11px">no capture yet</span>
         </div>
-        <div id="count-hospital_a" style="text-align:center;margin-top:6px;min-height:40px"></div>
+        <div id="count-hospital_a" style="text-align:center;margin-top:18px;min-height:54px"></div>
       </div>
       <div style="flex:1;min-width:0">
-        <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">💻 Hospital B</div>
-        <div style="background:#111;border-radius:8px;overflow:hidden;aspect-ratio:4/3;border:1px solid var(--border);display:flex;align-items:center;justify-content:center">
+        <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;text-align:center">💻 Hospital B</div>
+        <div style="background:#0f172a;border-radius:14px;overflow:hidden;aspect-ratio:16/10;border:1px solid var(--border);display:flex;align-items:center;justify-content:center;box-shadow:var(--shadow)">
           <img id="img-hospital_b" src="" alt="Hospital B" style="width:100%;height:100%;object-fit:cover;display:none">
           <span id="ph-hospital_b" style="color:var(--muted);font-size:11px">no capture yet</span>
         </div>
-        <div id="count-hospital_b" style="text-align:center;margin-top:6px;min-height:40px"></div>
+        <div id="count-hospital_b" style="text-align:center;margin-top:18px;min-height:54px"></div>
       </div>
-    </div>
-    <div id="vision-meta" style="margin-top:8px"></div>`;
+    </div>`;
 }
 
 function _loadImage(hid, ts) {
@@ -541,13 +850,10 @@ function renderVision(s) {
   const v = s.vision;
   const ha = v && v.hospital_a ? (v.hospital_a.saline ?? v.hospital_a.saline_bags ?? null) : null;
   const hb = v && v.hospital_b ? (v.hospital_b.saline ?? v.hospital_b.saline_bags ?? null) : null;
-
-  // Update counts in-place — no image reload
-  ['hospital_a','hospital_b'].forEach((hid, i) => {
-    const cnt = document.getElementById('count-' + hid);
-    const n = i === 0 ? ha : hb;
-    if (cnt) cnt.innerHTML = n !== null
-      ? `<div style="font-size:26px;font-weight:700;color:var(--accent)">${n}</div><div style="font-size:10px;color:var(--muted)">saline bags</div>`
+  [['hospital_a', ha], ['hospital_b', hb]].forEach(([hid, n]) => {
+    const c = document.getElementById('count-' + hid);
+    if (c) c.innerHTML = n !== null
+      ? `<div style="font-size:48px;font-weight:800;color:#111;line-height:1">${n}</div><div style="font-size:17px;font-weight:600;color:var(--text);margin-top:7px">medical supplies</div>`
       : '';
   });
 
@@ -560,11 +866,6 @@ function renderVision(s) {
     _loadImage('hospital_b', _visionTs);
   }
 
-  const meta = document.getElementById('vision-meta');
-  if (meta) meta.innerHTML = capturedAt
-    ? kv('captured', capturedAt.replace('T',' ').slice(0,19)+' UTC') +
-      (v.notes && v.notes.toLowerCase() !== 'none' ? kv('notes', escHtml(v.notes)) : '')
-    : '';
 }
 
 function refreshCameraImages() {
@@ -598,9 +899,11 @@ function renderClaude(r) {
   el.innerHTML =
     `<span class="risk-badge ${riskClass}">${risk.toUpperCase()} RISK</span>` +
     `<div class="priority-tags">${items}</div>` +
-    `<div class="reasoning-text">${escHtml(r.reasoning || '')}</div>` +
-    `<div style="margin-top:8px">` + kv('action', escHtml(r.recommended_action || '–')) + `</div>` +
-    kv('updated', r.updated_at ? r.updated_at.replace('T',' ').slice(0,19) + ' UTC' : '–');
+    `<div class="field-label">Analysis</div>` +
+    `<div class="field-text">${escHtml(r.reasoning || '')}</div>` +
+    `<div class="field-label">Recommended action</div>` +
+    `<div class="field-text">${escHtml(r.recommended_action || '–')}</div>` +
+    `<div class="meta-line">updated ${r.updated_at ? r.updated_at.replace('T',' ').slice(0,19) + ' UTC' : '–'}</div>`;
 }
 
 // SCENARIO
@@ -609,18 +912,45 @@ function renderScenario(sc) {
   if (!sc) { el.innerHTML = '<div class="empty">Run seed_demo_data.py to load scenario</div>'; return; }
   const dis = sc.disease || {};
   const supplies = dis.required_supplies || [];
-  el.innerHTML =
-    kv('scenario', dis.name || '–') +
-    (supplies.length ? `<ul class="supply-list" style="margin-top:8px">${supplies.map(s => `<li>${escHtml(s)}</li>`).join('')}</ul>` : '') +
-    kv('forecast', (sc.forecast || {}).status || '–', 'warn') +
-    kv('recommendation', (sc.recommendation || {}).status || '–', 'warn');
+  const fc = sc.forecast || {};
+  const rec = sc.recommendation || {};
+
+  const sevLabel = (dis.name || '–') + (dis.severity ? ' · ' + dis.severity : '');
+  let html = kv('scenario', sevLabel, dis.severity === 'Very High' ? 'critical' : '');
+
+  if (supplies.length) {
+    html += `<div class="field-label">Required supplies</div><ul class="supply-list">` +
+      supplies.map(s => `<li>${escHtml(s)}</li>`).join('') + `</ul>`;
+  }
+
+  // Forecast: prefer the hardcoded growth headline, fall back to a status string.
+  if (fc.predicted_case_growth) {
+    const win = fc.window ? ' · ' + escHtml(fc.window) : '';
+    html += kv('forecast demand', fc.predicted_case_growth + win, 'low');
+    if (fc.reason) html += `<div class="meta-line">${escHtml(fc.reason)}</div>`;
+  } else {
+    html += kv('forecast', humanize(fc.status) || '–', 'warn');
+  }
+
+  // Recommendation: show the concrete transfer when present.
+  if (rec.source_facility && rec.destination_facility) {
+    const qty = rec.transfer_quantity ?? '';
+    const item = rec.item || '';
+    const eta = rec.estimated_arrival ? ' · ETA ' + escHtml(rec.estimated_arrival) : '';
+    html += `<div class="field-label">Recommendation</div>` +
+      `<div class="field-text"><b>${qty} × ${escHtml(item)}</b> · ` +
+      `${escHtml(hospName(rec.source_facility))} → ${escHtml(hospName(rec.destination_facility))}${eta}</div>`;
+  } else {
+    html += kv('recommendation', humanize(rec.status) || '–', 'warn');
+  }
+  el.innerHTML = html;
 }
 
 // INVENTORY
 function renderInventory(inv, surplus, meta) {
   const el = document.getElementById('card-inventory');
-  const hids = ['hospital_a', 'hospital_b', 'hospital_c'];
-  const names = { hospital_a: 'Hospital A', hospital_b: 'Hospital B', hospital_c: 'Hospital C' };
+  const hids = ['hospital_a', 'hospital_b'];
+  const names = { hospital_a: 'Hospital A', hospital_b: 'Hospital B' };
 
   // Collect all items across all hospitals
   const allItems = new Set();
@@ -640,9 +970,10 @@ function renderInventory(inv, surplus, meta) {
       const sur = (surplus[h] || {})[item];
       if (rec) {
         const sc = 'status-' + (rec.status || 'ok');
-        html += `<div class="cell"><span class="${sc}">${rec.qty ?? '–'}</span>`;
-        html += `<span style="color:var(--muted);font-size:10px"> ${rec.status || ''}</span>`;
-        if (sur != null) html += `<span style="color:var(--accent);font-size:10px"> (spare:${sur})</span>`;
+        html += `<div class="cell">`;
+        html += `<div class="inv-val"><span class="${sc}">${rec.qty ?? '–'}</span>` +
+                `<span class="inv-status">${humanize(rec.status || '')}</span></div>`;
+        if (sur != null) html += `<div class="inv-spare">spare ${sur}</div>`;
         html += '</div>';
       } else {
         html += `<div class="cell" style="color:var(--border)">–</div>`;
@@ -651,20 +982,6 @@ function renderInventory(inv, surplus, meta) {
   });
   html += '</div>';
   el.innerHTML = html;
-}
-
-// TRANSFERS
-function renderTransfers(transfers) {
-  const el = document.getElementById('card-transfers');
-  if (!transfers || !transfers.length) { el.innerHTML = '<div class="empty">No transfers yet — run a negotiation via front_agent or ASI:One</div>'; return; }
-  el.innerHTML = transfers.map(t =>
-    `<div class="transfer">
-      <span class="flow"><strong>${t.quantity} × ${t.item}</strong></span>
-      <span style="color:var(--muted)">${t.from_hospital} → ${t.to_hospital}</span>
-      <span class="detail">~${t.eta_minutes || '?'}min</span>
-      <span class="status-pill">${t.status || 'unknown'}</span>
-    </div>`
-  ).join('');
 }
 
 // ALERTS
@@ -758,7 +1075,7 @@ function startBureau() {
         document.getElementById('bureau-dot').className = 'bureau-dot running';
         document.getElementById('bureau-label').textContent = 'Bureau running';
       } else {
-        toast('Bureau start failed', true);
+        toast(d.error ? ('Bureau start failed: ' + d.error) : 'Bureau start failed', true);
       }
     })
     .catch(e => {
@@ -806,11 +1123,11 @@ function runNegotiation() {
       btn.textContent = '⚡ Run Fetch.ai Negotiation';
       if (d.ok) {
         const src = d.vision_source || '';
-        const isVision = src.startsWith('vision');
         appendNeg({
           state: 'triggered',
-          detail: (isVision ? '📷 ' : '') + d.item + ' — need ' + d.need + ' units. ' + src
+          detail: d.item + ' — need ' + d.need + ' units. ' + src
         });
+        if (d.prompt) appendNeg({ state: 'sent', detail: '📨 Sent to Fetch.ai: ' + d.prompt });
         toast('Negotiation triggered — watching for updates…');
         setStage('fetch', 'warn');
         _subscribeSSE();
@@ -883,6 +1200,7 @@ function escHtml(s) {
 }
 
 // ── boot ───────────────────────────────────────────────────────────────────
+buildCarPages();
 poll();
 setInterval(poll, 3000);
 // Subscribe to SSE narration on page load to catch any in-progress negotiation

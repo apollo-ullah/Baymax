@@ -34,9 +34,14 @@ def _redis():
     return _client
 
 
-def push_trigger(item, requester=None, quantity=None):
-    """RPUSH a negotiation request onto the trigger list. Returns the payload."""
-    payload = {"item": item, "requester": requester, "quantity": quantity}
+def push_trigger(item, requester=None, quantity=None, prompt=None, stock=None):
+    """RPUSH a negotiation request onto the trigger list. Returns the payload.
+
+    ``prompt`` is the natural-language intent and ``stock`` carries the current
+    item stock for Hospital A and B — both surfaced to the FRONT agent.
+    """
+    payload = {"item": item, "requester": requester, "quantity": quantity,
+               "prompt": prompt, "stock": stock}
     _redis().rpush(TRIGGER_LIST, json.dumps(payload))
     return payload
 

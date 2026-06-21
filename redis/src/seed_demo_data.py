@@ -97,34 +97,38 @@ FORECAST = {
 }
 
 
-HEATSTROKE_SCENARIO = {
+FLU_SURGE_SCENARIO = {
     "disease": {
-        "name": "Heatstroke",
+        "name": "Influenza Surge",
+        "severity": "Very High",
         "required_supplies": [
             "IV Fluids",
             "Saline",
-            "Cooling Blankets",
-            "Electrolyte Solution",
+            "Antivirals",
+            "N95 Masks",
         ],
     },
     "facility_a": {
-        "inventory": {},
-        "inventory_status": "awaiting_live_inventory",
+        "inventory": {"Saline": 0, "IV Fluids": 40},
+        "inventory_status": "critical",
     },
     "facility_b": {
-        "inventory": {},
-        "inventory_status": "awaiting_live_inventory",
+        "inventory": {"Saline": 2, "IV Fluids": 320},
+        "inventory_status": "low",
     },
     "forecast": {
-        "status": "awaiting_live_data",
-        "predicted_case_growth": None,
+        "status": "rising",
+        "predicted_case_growth": "+40%",
+        "window": "next 7 days",
+        "reason": "Respiratory illness spike and cold front",
     },
     "recommendation": {
-        "status": "pending_reasoning",
-        "source_facility": None,
-        "destination_facility": None,
-        "transfer_quantity": None,
-        "estimated_arrival": None,
+        "status": "transfer_recommended",
+        "item": "Saline",
+        "source_facility": "hospital_b",
+        "destination_facility": "hospital_a",
+        "transfer_quantity": 20,
+        "estimated_arrival": "12 min",
     },
 }
 
@@ -191,8 +195,8 @@ def seed_forecast() -> None:
 def seed_scenarios() -> None:
     """Store demo scenario profiles as JSON strings via Redis SET."""
     client = get_redis()
-    client.set(scenario_key("heatstroke"), json.dumps(HEATSTROKE_SCENARIO))
-    print("Seeded scenario: Heatstroke")
+    client.set(scenario_key("flu_surge"), json.dumps(FLU_SURGE_SCENARIO))
+    print("Seeded scenario: Influenza Surge")
 
 
 def main() -> None:

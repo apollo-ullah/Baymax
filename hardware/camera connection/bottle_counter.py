@@ -37,20 +37,18 @@ Examine this image carefully. There is a GREEN STRAW (or green stick/divider) ph
 - **Hospital A**: everything to the LEFT of the green straw
 - **Hospital B**: everything to the RIGHT of the green straw
 
-Count the number of saline units on each side. For this inventory system, count ALL of the following as one saline unit:
-- Saline bags or IV fluid bags
-- Water bottles or liquid containers
-- **Yellow or red Red Bull cans** (used as saline proxies in this demo environment)
-- Any similar cylindrical or pouch-shaped item that could represent a hospital fluid supply
+Count the number of Red Bull energy-drink cans on each side. In this demo each
+Red Bull can stands in for one unit of the supply we are tracking, so report the
+Red Bull can count for each side — ignore every other object in the frame.
 
 Respond in exactly this format — no extra text before or after:
 
-HOSPITAL A: <number>
-HOSPITAL B: <number>
+HOSPITAL A: <number of Red Bull cans on the left>
+HOSPITAL B: <number of Red Bull cans on the right>
 TOTAL: <number>
-NOTES: <one sentence describing what you see including can/bottle types detected, or "None" if nothing notable>
+NOTES: <one sentence describing what you see, or "None" if nothing notable>
 
-If you cannot see the green straw, split the frame visually down the middle and note that no divider was detected. If no items are visible, return 0 for both."""
+If you cannot see the green straw, split the frame visually down the middle and note that no divider was detected. If no Red Bull cans are visible, return 0 for both."""
 
 
 def capture_frame() -> bytes:

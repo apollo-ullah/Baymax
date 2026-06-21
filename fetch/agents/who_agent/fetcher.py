@@ -43,12 +43,62 @@ if str(_REDIS_SRC) not in sys.path:
 from redis_client import get_redis  # noqa: E402
 from forecast import get_forecast, write_forecast  # noqa: E402
 
-# ── disease.sh endpoint ─────────────────────────────────────────────────────
+# ── disease.sh endpoints ────────────────────────────────────────────────────
 DISEASE_SH_URL = "https://disease.sh/v3/covid-19/historical/all?lastdays=30"
+# CDC US Clinical Labs influenza surveillance (% specimens positive for flu).
+INFLUENZA_SH_URL = "https://disease.sh/v3/influenza/CDC/USCL"
 ATTRIBUTION = "disease.sh (WHO/JHU CSSE)"
+ATTRIBUTION_FLU = "disease.sh · CDC US Clinical Labs (influenza surveillance)"
+
+# ── CDC feed: severity ordering + illness → critical supplies ────────────────
+# The CDC illness feed (mock_illness_feed.json, hardcoded demo) decides which
+# illness the WHO query and Claude reasoning focus on — the worst-rated one.
+_ILLNESS_SEVERITY = {"Minimal": 0, "Low": 1, "Moderate": 2, "High": 3, "Very High": 4}
+
+# Hardcoded illness → critical-supplies guideline (the "what we need" summary).
+# Stands in for a CDC supply guideline until that feed is integrated.
+_ILLNESS_SUPPLIES = {
+    "influenza": ["IV Fluids", "Saline", "Antivirals", "N95 Masks"],
+    "covid":     ["N95 Masks", "Oxygen", "Ventilators", "IV Fluids"],
+    "rsv":       ["Oxygen", "Nebulizers", "IV Fluids"],
+}
+_DEFAULT_SUPPLIES = ["IV Fluids", "Saline"]
+
+CDC_FEED_SOURCE = "CDC illness surveillance feed (hardcoded demo)"
 
 # ── Redis key for Claude reasoning output ───────────────────────────────────
 REASONING_KEY = "reasoning:latest"
+
+
+# ── CDC focus-illness selection ──────────────────────────────────────────────
+
+def determine_focus_illness(region: str) -> dict:
+    """
+    Pick the illness the CDC feed rates worst for ``region`` — this is what the
+    WHO query and Claude reasoning center on. Falls back to influenza so the
+    pipeline always has a focus even when the feed is missing.
+
+    Returns {"illness": str, "level": str}.
+    """
+    levels = (_read_illness_items(region) or {}).get("illness", {})
+    if not levels:
+        return {"illness": "influenza", "level": "Unknown"}
+    illness, level = max(
+        levels.items(), key=lambda kv: _ILLNESS_SEVERITY.get(kv[1], -1)
+    )
+    log.info(json.dumps({
+        "tag": "WHO", "file": "who_agent/fetcher.py",
+        "action": "focus_illness_selected",
+        "source": CDC_FEED_SOURCE,
+        "region": region, "illness": illness, "level": level,
+        "all_levels": levels,
+    }))
+    return {"illness": illness, "level": level}
+
+
+def supplies_for_illness(illness: str) -> list:
+    """Critical supplies the focus illness implies (the 'what we need' list)."""
+    return _ILLNESS_SUPPLIES.get((illness or "").lower(), _DEFAULT_SUPPLIES)
 
 
 # ── WHO data fetch ──────────────────────────────────────────────────────────
@@ -155,11 +205,145 @@ def parse_covid_stats(raw: dict) -> dict:
     return result
 
 
+# ── Influenza fetch (disease.sh / CDC US Clinical Labs) ──────────────────────
+
+def _num(d: dict, *keys):
+    """First present numeric value among ``keys`` (tolerates key-spelling drift)."""
+    for k in keys:
+        if k in d and d[k] not in (None, ""):
+            try:
+                return float(d[k])
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def fetch_influenza_cdc() -> dict:
+    """
+    Pull current-season CDC influenza surveillance from disease.sh and normalise
+    it to the same shape as the COVID stats so the dashboard renders generically.
+
+    Headline metric = % of clinical-lab specimens testing positive for flu;
+    trend compares the latest reported week to the prior one. Raises on failure.
+    """
+    log.info(json.dumps({
+        "tag": "WHO", "file": "who_agent/fetcher.py",
+        "action": "api_request", "endpoint": INFLUENZA_SH_URL,
+        "disease": "influenza", "source": ATTRIBUTION_FLU,
+    }))
+    with httpx.Client(timeout=15) as client:
+        resp = client.get(INFLUENZA_SH_URL)
+        resp.raise_for_status()
+        data = resp.json()
+
+    weeks = data if isinstance(data, list) else data.get("data") or []
+    if not weeks:
+        raise ValueError("influenza endpoint returned no weekly rows")
+
+    latest = weeks[-1]
+    prior = weeks[-2] if len(weeks) >= 2 else {}
+
+    pct = _num(latest, "percentpositive", "percentPositive", "percent_positive")
+    a = _num(latest, "totala", "totalA", "a") or 0
+    b = _num(latest, "totalb", "totalB", "b") or 0
+    specimens = _num(latest, "totalspecimens", "totalSpecimens", "total_specimens")
+    positives = int(a + b)
+    if pct is None and specimens:
+        pct = round((a + b) / specimens * 100, 1)
+
+    prior_pct = _num(prior, "percentpositive", "percentPositive", "percent_positive")
+    if pct is not None and prior_pct not in (None, 0):
+        trend_pct = round((pct - prior_pct) / prior_pct * 100, 1)
+    else:
+        trend_pct = 0.0
+    trend = "rising" if trend_pct > 5 else "falling" if trend_pct < -5 else "stable"
+
+    week = (latest.get("week") or latest.get("weekending")
+            or latest.get("weekEnding") or "current week")
+
+    stats = {
+        "illness": "influenza",
+        "headline_label": "specimens positive for flu",
+        "headline_value": f"{pct}%" if pct is not None else "–",
+        "secondary_label": "positive specimens (A+B)",
+        "secondary_value": f"{positives:,}",
+        "trend": trend,
+        "trend_pct": trend_pct,
+        "last_date": str(week),
+        "source": ATTRIBUTION_FLU,
+    }
+    log.info(json.dumps({
+        "tag": "WHO", "file": "who_agent/fetcher.py",
+        "action": "parsed_disease_counts", "disease": "influenza",
+        "percent_positive": pct, "positive_specimens": positives,
+        "trend": trend, "trend_pct_7d": trend_pct, "last_week": str(week),
+    }))
+    return stats
+
+
+def _covid_to_stats(covid_stats: dict) -> dict:
+    """Normalise the COVID 30-day stats into the generic disease-stats shape."""
+    return {
+        "illness": "covid",
+        "headline_label": "covid 30d cases",
+        "headline_value": f"{covid_stats.get('cases_30d', 0):,}",
+        "secondary_label": "covid 30d deaths",
+        "secondary_value": f"{covid_stats.get('deaths_30d', 0):,}",
+        "trend": covid_stats.get("trend", "unknown"),
+        "trend_pct": covid_stats.get("trend_pct", 0.0),
+        "last_date": covid_stats.get("last_date", "unknown"),
+        "source": ATTRIBUTION,
+    }
+
+
+def _synthetic_stats(illness: str, level: str) -> dict:
+    """
+    Hardcoded fallback when the focus illness has no live disease.sh endpoint
+    (e.g. RSV) or the live call fails — keeps the visualization aligned to the
+    CDC-flagged illness using its severity level.
+    """
+    rising = level in ("High", "Very High")
+    return {
+        "illness": illness,
+        "headline_label": "CDC activity level",
+        "headline_value": level or "Unknown",
+        "secondary_label": "surveillance",
+        "secondary_value": "no live disease.sh feed",
+        "trend": "rising" if rising else "stable",
+        "trend_pct": 0.0,
+        "last_date": "n/a",
+        "source": f"{CDC_FEED_SOURCE} (level only)",
+    }
+
+
+def fetch_disease_stats(focus: dict) -> dict:
+    """
+    Fetch normalised disease stats for the CDC-flagged focus illness. Influenza
+    and COVID hit live disease.sh endpoints; anything else (or a live failure)
+    falls back to a severity-derived synthetic stat. Never raises.
+    """
+    illness = (focus.get("illness") or "influenza").lower()
+    level = focus.get("level", "Unknown")
+    try:
+        if illness == "influenza":
+            return fetch_influenza_cdc()
+        if illness == "covid":
+            return _covid_to_stats(parse_covid_stats(fetch_who_covid(lastdays=30)))
+    except Exception as e:
+        log.error(json.dumps({
+            "tag": "WHO", "file": "who_agent/fetcher.py",
+            "action": "api_error", "disease": illness, "error": str(e),
+            "note": "falling back to severity-derived synthetic stats",
+        }))
+    return _synthetic_stats(illness, level)
+
+
 # ── Claude reasoning ─────────────────────────────────────────────────────────
 
 def reason_with_claude(
     region: str,
-    covid_stats: dict,
+    focus: dict,
+    disease_stats: dict,
     forecast_items: dict,
     inventory_snapshot: Optional[dict] = None,
     vision_snapshot: Optional[dict] = None,
@@ -179,7 +363,7 @@ def reason_with_claude(
             "tag": "CLAUDE_REASONING", "file": "who_agent/fetcher.py",
             "action": "skip", "reason": "ANTHROPIC_API_KEY not set",
         }))
-        return _fallback_reasoning(covid_stats, forecast_items)
+        return _fallback_reasoning(focus, disease_stats, forecast_items)
 
     try:
         import anthropic
@@ -188,7 +372,7 @@ def reason_with_claude(
             "tag": "CLAUDE_REASONING", "file": "who_agent/fetcher.py",
             "action": "skip", "reason": "anthropic package not installed",
         }))
-        return _fallback_reasoning(covid_stats, forecast_items)
+        return _fallback_reasoning(focus, disease_stats, forecast_items)
 
     # Strip raw camera text from vision before sending to Claude (already parsed)
     vision_counts = {}
@@ -198,25 +382,36 @@ def reason_with_claude(
             if k in ("hospital_a", "hospital_b") and isinstance(v, dict)
         }
 
+    focus_illness = focus.get("illness", "influenza")
+    focus_level = focus.get("level", "Unknown")
+    required = supplies_for_illness(focus_illness)
+
     context = {
         "region": region,
+        "cdc_focus_illness": {
+            "illness": focus_illness,
+            "cdc_activity_level": focus_level,
+            "required_supplies": required,
+            "_source": CDC_FEED_SOURCE,
+        },
         "weather_live": {
             "temperature_c": forecast_items.get("weather_temperature_c"),
             "windspeed_kmh": forecast_items.get("weather_windspeed"),
             "weather_code": forecast_items.get("weather_code"),
             "source": "Open-Meteo (live)",
         },
-        "illness_levels": {
+        "cdc_illness_levels": {
             **(forecast_items.get("illness", {})),
-            "_source": "mock feed (CDC not integrated)",
+            "_source": CDC_FEED_SOURCE,
         },
-        "who_covid_30d": {
-            "new_cases": covid_stats["cases_30d"],
-            "new_deaths": covid_stats["deaths_30d"],
-            "7day_trend": covid_stats["trend"],
-            "trend_change_pct": covid_stats["trend_pct"],
-            "last_date": covid_stats["last_date"],
-            "source": ATTRIBUTION,
+        "who_focus_surveillance": {
+            "illness": disease_stats.get("illness"),
+            disease_stats.get("headline_label", "metric"): disease_stats.get("headline_value"),
+            disease_stats.get("secondary_label", "metric2"): disease_stats.get("secondary_value"),
+            "trend": disease_stats.get("trend"),
+            "trend_change_pct": disease_stats.get("trend_pct"),
+            "last_date": disease_stats.get("last_date"),
+            "source": disease_stats.get("source"),
         },
         "hospital_inventory": inventory_snapshot or {},
         "camera_vision_counts": vision_counts or "no capture yet",
@@ -225,13 +420,18 @@ def reason_with_claude(
 
     prompt = (
         "You are a hospital supply chain risk analyst for a regional hospital network. "
+        f"The CDC surveillance feed flags '{focus_illness}' as the dominant illness for "
+        f"{region} at activity level '{focus_level}', so center your assessment on it and "
+        f"on the supplies it drives ({', '.join(required)}). "
         "Review ALL of the following real-time data sources:\n\n"
         f"{json.dumps(context, indent=2)}\n\n"
         "Weather code key: 0=clear, 45=fog, 61-67=rain, 71-77=snow, 95+=thunderstorm. "
         "Illness scale: Minimal < Low < Moderate < High < Very High. "
         "Inventory qty is units on hand; surplus is available to transfer.\n\n"
-        "Combine ALL signals (disease burden, weather, illness levels, camera counts, "
-        "current stock, active scenario) to assess supply risk for the next 7 days.\n\n"
+        "Combine ALL signals (the CDC-flagged focus illness and its WHO/CDC surveillance "
+        "numbers, weather, other illness levels, camera counts, current stock, active "
+        "scenario) to assess supply risk for the next 7 days. Prioritise the focus "
+        "illness's required supplies.\n\n"
         "Respond ONLY with valid JSON (no markdown fences, no extra text):\n"
         '{"risk_level": "low|medium|high|critical", '
         '"priority_items": ["item1", "item2"], '
@@ -244,9 +444,11 @@ def reason_with_claude(
         "action": "claude_request",
         "model": "claude-haiku-4-5-20251001",
         "context_keys": list(context.keys()),
+        "focus_illness": focus_illness, "focus_level": focus_level,
+        "required_supplies": required,
         "weather": context["weather_live"],
-        "illness": context["illness_levels"],
-        "disease_data": context["who_covid_30d"],
+        "illness": context["cdc_illness_levels"],
+        "disease_data": context["who_focus_surveillance"],
         "hospitals": list((inventory_snapshot or {}).keys()),
         "vision_counts": vision_counts,
         "has_scenario": bool(scenario_snapshot),
@@ -288,21 +490,22 @@ def reason_with_claude(
     return result
 
 
-def _fallback_reasoning(covid_stats: dict, forecast_items: dict) -> dict:
-    """Rule-based fallback when Claude is unavailable."""
+def _fallback_reasoning(focus: dict, disease_stats: dict, forecast_items: dict) -> dict:
+    """Rule-based fallback when Claude is unavailable, centred on the focus illness."""
     illness = forecast_items.get("illness", {})
-    high_illness = any(
-        v in ("High", "Very High") for v in illness.values()
-    )
-    rising = covid_stats.get("trend") == "rising"
+    focus_illness = focus.get("illness", "influenza")
+    focus_level = focus.get("level", "Unknown")
+    high_illness = focus_level in ("High", "Very High")
+    rising = disease_stats.get("trend") == "rising"
     risk = "high" if (high_illness and rising) else "medium" if high_illness or rising else "low"
+    required = supplies_for_illness(focus_illness)
     return {
         "risk_level": risk,
-        "priority_items": ["IV Fluids", "Saline"] if risk in ("high", "critical") else ["N95 Masks"],
+        "priority_items": required[:2] if risk in ("high", "critical") else required[:1],
         "reasoning": (
-            f"Rule-based fallback (Claude unavailable). "
-            f"COVID trend={covid_stats.get('trend')}, "
-            f"illness={illness}."
+            f"Rule-based fallback (Claude unavailable). CDC focus illness="
+            f"{focus_illness} ({focus_level}); surveillance trend={disease_stats.get('trend')} "
+            f"({disease_stats.get('headline_value')} {disease_stats.get('headline_label')})."
         ),
         "recommended_action": "Check API key and retry for Claude reasoning.",
         "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -364,7 +567,8 @@ def _read_illness_items(region: str) -> dict:
         log.info(json.dumps({
             "tag": "INGESTION", "file": "who_agent/fetcher.py",
             "action": "illness_feed_read",
-            "source": "mock_illness_feed.json",
+            "source": CDC_FEED_SOURCE,
+            "file_path": "mock_illness_feed.json",
             "region": region, "levels": levels,
         }))
         return {"illness": levels} if levels else {}
@@ -406,10 +610,10 @@ def _get_vision_snapshot() -> dict:
 
 
 def _get_scenario_snapshot() -> dict:
-    """Read the active heatstroke scenario from Redis."""
+    """Read the active demo scenario from Redis (flu surge)."""
     try:
         client = get_redis()
-        raw = client.get("scenario:heatstroke")
+        raw = client.get("scenario:flu_surge")
         return json.loads(raw) if raw else {}
     except Exception:
         return {}
@@ -419,44 +623,42 @@ def _get_scenario_snapshot() -> dict:
 
 def run_who_update(region: str = "san_francisco") -> dict:
     """
-    Full pipeline:  disease.sh → parse → Claude reasoning → Redis write.
+    Full pipeline:  CDC focus illness → disease.sh surveillance → Claude → Redis.
 
-    Returns the reasoning dict. On WHO API failure, skips to Claude with
-    whatever data is already in Redis and logs the error.
+    The CDC illness feed decides which illness to query disease.sh for (the worst-
+    rated one), so the WHO numbers and reasoning track the actual problem. Returns
+    the reasoning dict; any WHO API failure falls back gracefully and logs.
     """
-    # Step 1: fetch WHO / disease.sh data
-    covid_stats = None
-    try:
-        raw = fetch_who_covid(lastdays=30)
-        covid_stats = parse_covid_stats(raw)
-    except Exception as e:
-        log.error(json.dumps({
-            "tag": "WHO", "file": "who_agent/fetcher.py",
-            "action": "api_error", "error": str(e),
-            "note": "falling back to zero counts",
-        }))
-        covid_stats = {
-            "cases_30d": 0, "deaths_30d": 0,
-            "trend": "unknown", "trend_pct": 0.0, "last_date": "unknown",
-        }
+    # Step 1: let the CDC feed pick the focus illness, then fetch its surveillance.
+    focus = determine_focus_illness(region)
+    disease_stats = fetch_disease_stats(focus)
+    required = supplies_for_illness(focus["illness"])
 
-    # Step 2: fetch weather (Open-Meteo, live, no key) + illness (mock feed)
+    # Step 2: fetch weather (Open-Meteo, live, no key) + illness (CDC feed)
     weather_items = _fetch_weather_items()
     illness_items = _read_illness_items(region)
 
-    # Step 3: merge WHO + weather + illness into forecast:{region}
+    # Step 3: merge focus-illness WHO surveillance + weather + illness into forecast:{region}
     try:
         r = get_redis()
         existing_raw = r.get(f"forecast:{region}")
         existing = json.loads(existing_raw) if existing_raw else {}
-        items = dict(existing.get("items", {}))
+        # Drop any prior who_* fields so a focus-illness switch never leaves stale
+        # surveillance numbers (e.g. old covid counts) behind in the record.
+        items = {k: v for k, v in existing.get("items", {}).items()
+                 if not k.startswith("who_")}
         items.update({
-            "who_covid_30d_cases": covid_stats["cases_30d"],
-            "who_covid_30d_deaths": covid_stats["deaths_30d"],
-            "who_covid_trend": covid_stats["trend"],
-            "who_covid_trend_pct": covid_stats["trend_pct"],
-            "who_last_date": covid_stats["last_date"],
-            "who_source": ATTRIBUTION,
+            "who_focus_illness": focus["illness"],
+            "who_focus_level": focus["level"],
+            "who_metric_label": disease_stats["headline_label"],
+            "who_metric_value": disease_stats["headline_value"],
+            "who_metric2_label": disease_stats["secondary_label"],
+            "who_metric2_value": disease_stats["secondary_value"],
+            "who_trend": disease_stats["trend"],
+            "who_trend_pct": disease_stats["trend_pct"],
+            "who_last_date": disease_stats["last_date"],
+            "who_source": disease_stats["source"],
+            "who_required_supplies": required,
         })
         items.update(weather_items)
         items.update(illness_items)
@@ -470,6 +672,7 @@ def run_who_update(region: str = "san_francisco") -> dict:
             "tag": "WHO", "file": "who_agent/fetcher.py",
             "action": "redis_write",
             "key": f"forecast:{region}",
+            "focus_illness": focus["illness"], "focus_level": focus["level"],
             "who_fields":     {k: v for k, v in items.items() if k.startswith("who_")},
             "weather_fields": {k: v for k, v in items.items() if k.startswith("weather_")},
             "illness_fields": items.get("illness", {}),
@@ -486,10 +689,11 @@ def run_who_update(region: str = "san_francisco") -> dict:
     vision_snapshot    = _get_vision_snapshot()
     scenario_snapshot  = _get_scenario_snapshot()
 
-    # Step 5: Claude reasoning — full context: WHO + weather + illness + inventory + vision + scenario
+    # Step 5: Claude reasoning — focus illness + WHO surveillance + weather + inventory + vision + scenario
     reasoning = reason_with_claude(
         region=region,
-        covid_stats=covid_stats,
+        focus=focus,
+        disease_stats=disease_stats,
         forecast_items=items,
         inventory_snapshot=inventory_snapshot,
         vision_snapshot=vision_snapshot,

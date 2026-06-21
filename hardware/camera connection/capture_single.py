@@ -45,17 +45,19 @@ VALID_HOSPITALS = {"hospital_a", "hospital_b"}
 # Pub/sub channel the dashboard publishes one-shot capture requests on.
 CAPTURE_CHANNEL = "vision:capture_request"
 
+# Red Bull cans are the physical demo proxy for whatever supply the hospital is
+# currently short on (Saline, Sutures, …). We count the cans and report that
+# number AS the needed item's count, so "2 Red Bulls" == "2 {item}".
 SINGLE_HOSPITAL_PROMPT = """You are a hospital supply inventory scanner.
 
-Count the saline units visible in this image. Count ALL of the following as one saline unit:
-- Saline bags or IV fluid bags
-- Water bottles or liquid containers
-- Yellow or red Red Bull cans (used as saline proxies in this demo)
-- Any similar cylindrical or pouch-shaped liquid supply item
+Count the number of Red Bull energy-drink cans visible in this image. In this
+demo, each Red Bull can stands in for one unit of {item} (the supply we are
+currently tracking). Report the number of Red Bull cans as the {item} count —
+ignore every other object in the frame.
 
 Respond in exactly this format — no extra text:
 
-COUNT: <number>
+COUNT: <number of Red Bull cans>
 NOTES: <one sentence describing what you see, or "None">"""
 
 
@@ -88,8 +90,10 @@ def load_and_encode(path: str) -> tuple[bytes, object]:
     return buf.tobytes(), img
 
 
-def count_via_claude(jpeg_bytes: bytes) -> tuple[int, str]:
-    """Send frame to Claude Vision, return (count, notes)."""
+def count_via_claude(jpeg_bytes: bytes, item: str = "Saline") -> tuple[int, str]:
+    """Send frame to Claude Vision, return (count, notes).
+
+    Counts Red Bull cans and reports them as units of `item` (demo proxy)."""
     import anthropic
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
@@ -101,7 +105,7 @@ def count_via_claude(jpeg_bytes: bytes) -> tuple[int, str]:
         max_tokens=128,
         messages=[{"role": "user", "content": [
             {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}},
-            {"type": "text", "text": SINGLE_HOSPITAL_PROMPT},
+            {"type": "text", "text": SINGLE_HOSPITAL_PROMPT.format(item=item)},
         ]}],
     )
     raw = msg.content[0].text.strip()
@@ -190,7 +194,7 @@ def capture_once(r, hospital_id, label, item, capacity, reserve):
     out = str(Path(__file__).parent / f"capture_{hospital_id}_{int(time.time())}.jpg")
     cv2.imwrite(out, frame)
     print("Sending to Claude Vision…")
-    qty, notes = count_via_claude(jpeg_bytes)
+    qty, notes = count_via_claude(jpeg_bytes, item)
     pct, status, surplus = persist(r, hospital_id, item, capacity, reserve,
                                    jpeg_bytes, qty, notes)
     print(f"Detected: {qty} {item} — {notes} (pct={pct} status={status} surplus={surplus})")
@@ -267,7 +271,7 @@ def run_loop(r, hospital_id, label, item, capacity, reserve, interval, vision_ev
             notes = ""
             if do_vision:
                 try:
-                    last_qty, notes = count_via_claude(jpeg_bytes)
+                    last_qty, notes = count_via_claude(jpeg_bytes, item)
                 except SystemExit:
                     raise
                 except Exception as e:
@@ -352,7 +356,7 @@ def main():
             print(f"Frame saved: {out}")
 
         print("Sending to Claude Vision...")
-        qty, notes = count_via_claude(jpeg_bytes)
+        qty, notes = count_via_claude(jpeg_bytes, item)
         print(f"Detected: {qty} {item} — {notes}")
 
     pct, status, surplus = persist(r, hospital_id, item, capacity, reserve,

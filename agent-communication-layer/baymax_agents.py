@@ -127,6 +127,19 @@ def register_narration_sink(fn) -> None:
     _NARRATION_SINKS.append(fn)
 
 
+def _emit(state: str, detail: str, req_id: str = "") -> None:
+    """Publish an extra, granular narration event (inter-agent FETCH traffic) to
+    every registered sink — independent of `_step`, so the dashboard timeline can
+    stream the agent-to-agent messages one by one. Swallows all sink errors."""
+    payload = {"state": state, "detail": detail, "final": False,
+               "req_id": req_id, "source": "agent"}
+    for sink in _NARRATION_SINKS:
+        try:
+            sink(payload)
+        except Exception:
+            pass
+
+
 # ---------------------------------------------------------------------------
 # Narration: log every step; if a negotiation has a `reply_to` (the ASI:One
 # chat sender, set by FRONT), also stream the milestone back as a ChatMessage.
@@ -227,6 +240,8 @@ async def start_negotiation(ctx: Context, item: str, *, requester: str = REQUEST
             "message_type=SupplyRequest item=%s quantity=%d req_id=%s",
             requester, facility_name, addr, item, need, req_id,
         )
+        _emit("request_sent",
+              f"📤 {requester} → {facility_name}: requesting {need} {item}", req_id)
         await ctx.send(addr, req)
     neg["state"] = NegotiationState.COLLECTING_OFFERS
     return req_id
@@ -412,6 +427,9 @@ async def _propose_leg(ctx: Context, neg: dict, req_id: str, pid: str,
         "message_type=TransferProposal pid=%s item=%s quantity=%d eta_minutes=%d",
         neg["requester"], offerer, pid, neg["item"], quantity, eta_minutes,
     )
+    _emit("proposal_sent",
+          f"📤 {neg['requester']} → {offerer}: proposing transfer of {quantity} "
+          f"{neg['item']} (~{eta_minutes} min)", req_id)
     await ctx.send(SURPLUS_ADDRESSES[offerer], prop)
 
 
@@ -781,6 +799,9 @@ def attach_hospital_handlers(agent, facility: str):
             "item=%s quantity_needed=%d req_id=%s",
             facility, msg.requester, msg.item, msg.quantity_needed, msg.request_id,
         )
+        _emit("request_received",
+              f"📨 {facility} received request for {msg.quantity_needed} {msg.item}",
+              msg.request_id)
         inv = get_inventory(facility, msg.item)
         spare = inv.spare_capacity
         if spare > 0:
@@ -799,6 +820,9 @@ def attach_hospital_handlers(agent, facility: str):
             )
             ctx.logger.info(f"[{facility}] Offering {spare} {msg.item} "
                             f"(have {inv.qty}, safety {inv.safety_threshold}).")
+            _emit("offer_made",
+                  f"📦 {facility} offers {spare} {msg.item} (≈{eta_minutes_for(dist)} min)",
+                  msg.request_id)
         else:
             offer = SupplyOffer(request_id=msg.request_id, offerer=facility,
                                 item=msg.item, quantity_available=0, can_offer=False)
@@ -808,6 +832,8 @@ def attach_hospital_handlers(agent, facility: str):
                 facility, msg.requester, msg.item, msg.request_id,
             )
             ctx.logger.info(f"[{facility}] No spare {msg.item} — declining.")
+            _emit("offer_declined",
+                  f"🚫 {facility} has no spare {msg.item} — declining", msg.request_id)
         await ctx.send(sender, offer)
 
     @agent.on_message(model=TransferProposal)
@@ -818,6 +844,9 @@ def attach_hospital_handlers(agent, facility: str):
             facility, msg.from_facility, msg.item, msg.quantity,
             msg.leg_index + 1, msg.leg_count, msg.proposal_id, msg.request_id,
         )
+        _emit("proposal_received",
+              f"📥 {facility} received transfer proposal: {msg.quantity} {msg.item} "
+              f"→ {msg.to_facility}", msg.request_id)
         # Forced-reject knob.
         if force_reject == facility and not _forced["done"]:
             _forced["done"] = True
@@ -846,6 +875,9 @@ def attach_hospital_handlers(agent, facility: str):
                 facility, msg.to_facility, msg.item, msg.quantity,
                 msg.proposal_id, msg.request_id,
             )
+            _emit("leg_accepted",
+                  f"✅ {facility} accepts leg {msg.leg_index + 1}/{msg.leg_count}: "
+                  f"{msg.quantity} {msg.item} → {msg.to_facility}", msg.request_id)
             await ctx.send(sender, TransferAccept(request_id=msg.request_id,
                                                   proposal_id=msg.proposal_id, accepted_by=facility))
         else:

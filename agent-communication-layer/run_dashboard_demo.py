@@ -58,7 +58,12 @@ async def _poll_trigger(ctx: Context):
         item = trigger.get("item", "saline")
         qty = trigger.get("quantity")
         requester = trigger.get("requester", REQUESTER)
-        ctx.logger.info(f"[dashboard] trigger: {item} qty={qty} requester={requester}")
+        prompt = trigger.get("prompt")
+        stock = trigger.get("stock")
+        ctx.logger.info(
+            f"[dashboard] trigger: {item} qty={qty} requester={requester} "
+            f"prompt={prompt!r} stock={stock}"
+        )
         await sp.start_negotiation(
             ctx, item, requester=requester, quantity_needed=qty,
             reply_to=None, source="dashboard",

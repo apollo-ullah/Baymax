@@ -51,8 +51,8 @@ def main():
     forecast = get_forecast("san_francisco")
     print(json.dumps(forecast, indent=2))
 
-    section("4B. Heatstroke scenario profile")
-    print(json.dumps(get_scenario("heatstroke"), indent=2))
+    section("4B. Influenza Surge scenario profile")
+    print(json.dumps(get_scenario("flu_surge"), indent=2))
 
     section("5. Detect shortfalls for hospital_a")
     detect_shortfall_and_publish("hospital_a", "san_francisco")
