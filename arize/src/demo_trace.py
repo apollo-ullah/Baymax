@@ -13,13 +13,13 @@ try:
     from .trace_decision_chain import trace_decision_chain
     from .trace_decision_outcome import trace_decision_outcome
 except ImportError:
-    from phoenix_client import print_phoenix_status
-    from trace_inventory import trace_inventory_low
-    from trace_forecast import trace_forecast_signal
-    from trace_reasoning import trace_reasoning_decision
-    from trace_transfer import trace_transfer_recommendation
-    from trace_decision_chain import trace_decision_chain
-    from trace_decision_outcome import trace_decision_outcome
+    from arize.src.phoenix_client import print_phoenix_status
+    from arize.src.trace_inventory import trace_inventory_low
+    from arize.src.trace_forecast import trace_forecast_signal
+    from arize.src.trace_reasoning import trace_reasoning_decision
+    from arize.src.trace_transfer import trace_transfer_recommendation
+    from arize.src.trace_decision_chain import trace_decision_chain
+    from arize.src.trace_decision_outcome import trace_decision_outcome
 
 
 def main():

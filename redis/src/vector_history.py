@@ -12,8 +12,8 @@ import json
 
 import numpy as np
 
-from redis_client import get_redis
-from schema import HISTORY_PREFIX
+from redis.src.redis_client import get_redis
+from redis.src.schema import HISTORY_PREFIX
 
 MODEL_NAME = "all-MiniLM-L6-v2"
 

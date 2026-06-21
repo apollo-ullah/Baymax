@@ -18,15 +18,15 @@ try:
     from .phoenix_client import print_phoenix_status, get_tracer
     from .trace_store import save_trace
 except ImportError:
-    from trace_schema import (
+    from arize.src.trace_schema import (
         TRACE_FORECAST_SIGNAL,
         ATTR_REGION,
         ATTR_ITEM,
         ATTR_PREDICTED_DEMAND_INCREASE_PCT,
         ATTR_REASON,
     )
-    from phoenix_client import print_phoenix_status, get_tracer
-    from trace_store import save_trace
+    from arize.src.phoenix_client import print_phoenix_status, get_tracer
+    from arize.src.trace_store import save_trace
 
 
 def trace_forecast_signal(region, item, predicted_demand_increase_pct, reason):

@@ -3,8 +3,8 @@
 import json
 from datetime import datetime, timezone
 
-from redis_client import get_redis
-from schema import EVENTS_CHANNEL, inventory_key, surplus_key
+from redis.src.redis_client import get_redis
+from redis.src.schema import EVENTS_CHANNEL, inventory_key, surplus_key
 
 
 def status_from_pct(pct: float) -> str:

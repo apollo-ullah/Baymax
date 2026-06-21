@@ -18,15 +18,15 @@ try:
     from .phoenix_client import print_phoenix_status, get_tracer
     from .trace_store import save_trace
 except ImportError:
-    from trace_schema import (
+    from arize.src.trace_schema import (
         TRACE_INVENTORY_LOW,
         ATTR_HOSPITAL_ID,
         ATTR_ITEM,
         ATTR_CURRENT_PCT,
         ATTR_STATUS,
     )
-    from phoenix_client import print_phoenix_status, get_tracer
-    from trace_store import save_trace
+    from arize.src.phoenix_client import print_phoenix_status, get_tracer
+    from arize.src.trace_store import save_trace
 
 
 def trace_inventory_low(hospital_id, item, current_pct, status):

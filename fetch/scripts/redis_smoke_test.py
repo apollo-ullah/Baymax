@@ -9,7 +9,7 @@ forecast:{region}, and (3) reads the key back to prove both signals coexist —
 i.e. the upsert merge works and we are connected.
 """
 
-from tracks.fetch.shared import redis_io
+from fetch.shared import redis_io
 
 REGION = "san_francisco"
 

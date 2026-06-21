@@ -22,7 +22,7 @@ try:
     from .phoenix_client import print_phoenix_status, get_tracer
     from .trace_store import save_trace
 except ImportError:
-    from trace_schema import (
+    from arize.src.trace_schema import (
         TRACE_DECISION_CHAIN,
         ATTR_HOSPITAL_ID,
         ATTR_ITEM,
@@ -33,8 +33,8 @@ except ImportError:
         ATTR_SOURCE_HOSPITAL,
         ATTR_TRANSFER_QUANTITY,
     )
-    from phoenix_client import print_phoenix_status, get_tracer
-    from trace_store import save_trace
+    from arize.src.phoenix_client import print_phoenix_status, get_tracer
+    from arize.src.trace_store import save_trace
 
 
 def trace_decision_chain(
