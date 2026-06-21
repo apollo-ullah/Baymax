@@ -66,22 +66,46 @@ AGENT_VENV_PYTHON = AGENT_DIR / ".venv" / "bin" / "python"
 _bureau_proc: subprocess.Popen | None = None
 
 
+BUREAU_LOG = Path("/tmp/baymax_bureau.log")
+BUREAU_PORT = 8000  # uAgents Bureau internal ASGI port
+
+
+def _free_bureau_port():
+    """Kill anything holding the Bureau's port so a fresh spawn can bind."""
+    try:
+        result = subprocess.run(
+            ["lsof", "-ti", f":{BUREAU_PORT}"],
+            capture_output=True, text=True,
+        )
+        pids = result.stdout.strip().split()
+        for pid in pids:
+            try:
+                os.kill(int(pid), 9)
+                log.info("Killed stale process %s on port %s", pid, BUREAU_PORT)
+            except (ProcessLookupError, ValueError):
+                pass
+    except Exception as exc:
+        log.warning("_free_bureau_port: %s", exc)
+
+
 def _ensure_bureau():
     global _bureau_proc
     if _bureau_proc and _bureau_proc.poll() is None:
         return
+    _free_bureau_port()
     env = {**os.environ,
            "BAYMAX_REDIS": "1",
            "BAYMAX_OFFER_TIMEOUT": "4.0",
            "BAYMAX_SPARSE_NARRATION": "0",
            "BAYMAX_DASHBOARD_PORT": "8079",  # avoid conflict with Flask
            "REDIS_URL": os.getenv("REDIS_URL", "redis://localhost:6379")}
+    log_fh = open(BUREAU_LOG, "w")
     _bureau_proc = subprocess.Popen(
         [str(AGENT_VENV_PYTHON), "run_dashboard_demo.py"],
         cwd=str(AGENT_DIR), env=env,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        stdout=log_fh, stderr=log_fh,
     )
-    log.info("Bureau started (pid %s)", _bureau_proc.pid)
+    log.info("Bureau started (pid %s) — log: %s", _bureau_proc.pid, BUREAU_LOG)
 
 
 # ── In-memory narration state ─────────────────────────────────────────────────
@@ -307,6 +331,27 @@ def api_state():
     return jsonify(get_state())
 
 
+@app.route("/image/hospital/<hid>")
+def image_hospital(hid):
+    """Serve a hospital's latest camera image from Redis (vision:image:{hid})."""
+    import base64, io
+    if hid not in ("hospital_a", "hospital_b"):
+        return "Not found", 404
+    try:
+        r = _redis()
+        data = r.get(f"vision:image:{hid}")
+        if data:
+            return send_file(io.BytesIO(base64.b64decode(data)), mimetype="image/jpeg")
+    except Exception:
+        pass
+    # Placeholder 1×1 gray PNG
+    placeholder_b64 = (
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk"
+        "YPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+    )
+    return send_file(io.BytesIO(base64.b64decode(placeholder_b64)), mimetype="image/png")
+
+
 @app.route("/image/latest")
 def image_latest():
     """Serve the most recent capture JPEG."""
@@ -325,36 +370,55 @@ def image_latest():
     )
 
 
+CAPTURE_SINGLE_SCRIPT = HARDWARE_DIR / "capture_single.py"
+HOSPITAL_ID = os.getenv("HOSPITAL_ID", "hospital_a")  # which hospital this Mac is
+
+
 @app.route("/api/capture", methods=["POST"])
 def api_capture():
     """
-    Capture a real frame from the MacBook camera, send to Claude Vision,
-    parse saline counts, and write them to Redis.
+    Capture from this MacBook's camera, send to Claude Vision, write image +
+    inventory to Redis. hospital_id defaults to HOSPITAL_ID env var (hospital_a).
+
+    Body (JSON, optional):
+        hospital_id — override which hospital this capture is for
+        count       — skip camera/Claude, write a manual count instead
     """
+    data = request.get_json(silent=True) or {}
+    hospital_id = data.get("hospital_id") or HOSPITAL_ID
+    manual_count = data.get("count")
+
     log.info(json.dumps({
         "tag": "VISION", "file": "ui/app.py",
         "action": "capture_triggered",
-        "source": "camera + Claude Vision",
+        "hospital_id": hospital_id,
+        "manual_count": manual_count,
     }))
+
+    env = {**os.environ, "HOSPITAL_ID": hospital_id,
+           "REDIS_URL": os.getenv("REDIS_URL", "redis://localhost:6379")}
+
+    cmd = [sys.executable, str(CAPTURE_SINGLE_SCRIPT)]
+    if manual_count is not None:
+        cmd += ["--count", str(manual_count)]
 
     try:
         result = subprocess.run(
-            [sys.executable, str(SYNC_SCRIPT)],
-            capture_output=True, text=True, timeout=60,
-            cwd=str(HARDWARE_DIR),
+            cmd, capture_output=True, text=True, timeout=60,
+            cwd=str(HARDWARE_DIR), env=env,
         )
         output = result.stdout + result.stderr
         log.info(json.dumps({
             "tag": "VISION", "file": "ui/app.py",
             "action": "capture_complete",
-            "stdout": result.stdout.strip(),
+            "hospital_id": hospital_id,
             "returncode": result.returncode,
         }))
         if result.returncode != 0:
             return jsonify({"ok": False, "error": output}), 500
-        return jsonify({"ok": True, "output": output})
+        return jsonify({"ok": True, "hospital_id": hospital_id, "output": output})
     except subprocess.TimeoutExpired:
-        return jsonify({"ok": False, "error": "Camera capture timed out (60s)"}), 500
+        return jsonify({"ok": False, "error": "Capture timed out (60s)"}), 500
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 

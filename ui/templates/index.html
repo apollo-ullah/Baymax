@@ -194,7 +194,7 @@
 <!-- Action bar -->
 <div class="actions" style="padding-top:18px;">
   <button id="btn-who" onclick="refreshWho()">↻ Refresh WHO + Claude</button>
-  <button id="btn-capture" class="secondary" onclick="triggerCapture()">📷 Capture Image</button>
+  <button id="btn-capture" class="secondary" onclick="triggerCapture()">📷 Capture (Hospital A)</button>
   <button id="btn-negotiate" class="secondary" onclick="runNegotiation()" style="background:#1a1a3b;border-color:#4f46e5;color:#818cf8">⚡ Run Fetch.ai Negotiation</button>
   <button id="btn-bureau" class="secondary" onclick="startBureau()" style="background:#0a1a0a;border-color:#166534;color:#4ade80">▶ Start Bureau</button>
   <div class="bureau-status">
@@ -242,20 +242,20 @@
     </div>
   </div>
 
-  <!-- VISION card -->
-  <div class="card">
+  <!-- VISION card — two laptop cameras -->
+  <div class="card span2">
     <div class="card-header">
       <span class="tag tag-vision">VISION</span>
       <span class="title">Camera Inventory</span>
-      <span class="source">Claude Vision (claude-sonnet-4-6)</span>
+      <span class="source">Claude Vision · 2 laptops → Redis</span>
     </div>
     <div class="card-body" id="card-vision">
-      <div class="empty">No capture yet…</div>
+      <div class="empty">No captures yet — click 📷 Capture</div>
     </div>
   </div>
 
   <!-- CLAUDE REASONING card -->
-  <div class="card span2">
+  <div class="card">
     <div class="card-header">
       <span class="tag tag-claude">CLAUDE REASONING</span>
       <span class="title">Supply Risk Analysis</span>
@@ -498,32 +498,53 @@ function renderWho(items) {
     kv('source', items.who_source || 'disease.sh / WHO/JHU');
 }
 
-// VISION
+// VISION — two laptop cameras side by side
+let _visionTs = Date.now();
 function renderVision(s) {
   const el = document.getElementById('card-vision');
   const v = s.vision;
-  const ts = s.vision_image_ts;
-  let imgHtml = '';
-  if (s.vision_image_available) {
-    imgHtml = `<img class="vision-img" src="/image/latest?t=${ts || Date.now()}" alt="latest capture">`;
-  }
-  if (!v && !s.vision_image_available) {
-    el.innerHTML = '<div class="empty">No captures yet — click 📷 Capture</div>'; return;
-  }
-  const ha = v && v.hospital_a ? (v.hospital_a.saline ?? v.hospital_a.saline_bags ?? '–') : '–';
-  const hb = v && v.hospital_b ? (v.hospital_b.saline ?? v.hospital_b.saline_bags ?? '–') : '–';
-  const rawResp = v && v.claude_raw
-    ? `<div style="margin-top:10px"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px">Claude Vision response</div><pre style="font-size:11px;color:#a3e635;background:#0a1a00;border:1px solid #1a3300;border-radius:4px;padding:8px;white-space:pre-wrap;word-break:break-word">${escHtml(v.claude_raw)}</pre></div>`
-    : '';
-  el.innerHTML = imgHtml +
-    `<div class="vision-counts">
-      <div class="hospital-count"><div class="name">Hospital A</div><div class="count">${ha}</div><div class="item">saline bags</div></div>
-      <div class="hospital-count"><div class="name">Hospital B</div><div class="count">${hb}</div><div class="item">saline bags</div></div>
-    </div>` +
-    rawResp +
-    (v && v.captured_at ? kv('captured', v.captured_at.replace('T',' ').slice(0,19) + ' UTC') : '') +
-    (v && v.source ? kv('source', v.source) : '') +
-    (s.vision_image_name ? kv('image', s.vision_image_name) : '');
+  const ha = v && v.hospital_a ? (v.hospital_a.saline ?? v.hospital_a.saline_bags ?? null) : null;
+  const hb = v && v.hospital_b ? (v.hospital_b.saline ?? v.hospital_b.saline_bags ?? null) : null;
+
+  const camCard = (hid, label, count) => {
+    const countHtml = count !== null
+      ? `<div class="count" style="font-size:26px;font-weight:700;color:var(--accent);margin:4px 0">${count}</div>
+         <div style="font-size:10px;color:var(--muted)">saline bags</div>`
+      : `<div style="font-size:11px;color:var(--muted);margin-top:6px">no capture yet</div>`;
+    return `
+      <div style="flex:1;min-width:0">
+        <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">
+          💻 ${label}
+        </div>
+        <div style="position:relative;background:#111;border-radius:8px;overflow:hidden;aspect-ratio:4/3;border:1px solid var(--border)">
+          <img
+            id="img-${hid}"
+            src="/image/hospital/${hid}?t=${_visionTs}"
+            alt="${label} camera"
+            style="width:100%;height:100%;object-fit:cover"
+            onerror="this.style.opacity='0.2'"
+          >
+        </div>
+        <div style="text-align:center;margin-top:6px">${countHtml}</div>
+      </div>`;
+  };
+
+  el.innerHTML = `
+    <div style="display:flex;gap:12px;align-items:flex-start">
+      ${camCard('hospital_a', 'Hospital A', ha)}
+      ${camCard('hospital_b', 'Hospital B', hb)}
+    </div>
+    ${v && v.captured_at ? `<div style="margin-top:8px">${kv('captured', v.captured_at.replace('T',' ').slice(0,19)+' UTC')}</div>` : ''}
+    ${v && v.notes && v.notes.toLowerCase() !== 'none' ? kv('notes', escHtml(v.notes)) : ''}
+  `;
+}
+
+function refreshCameraImages() {
+  _visionTs = Date.now();
+  ['hospital_a','hospital_b'].forEach(hid => {
+    const img = document.getElementById('img-' + hid);
+    if (img) img.src = `/image/hospital/${hid}?t=${_visionTs}`;
+  });
 }
 
 // CLAUDE REASONING
@@ -650,13 +671,15 @@ function triggerCapture() {
   const btn = document.getElementById('btn-capture');
   btn.disabled = true;
   btn.textContent = '⏳ Capturing…';
-  fetch('/api/capture', { method: 'POST' })
+  fetch('/api/capture', { method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({}) })
     .then(r => r.json())
     .then(d => {
       btn.disabled = false;
-      btn.textContent = '📷 Capture Image';
+      btn.textContent = '📷 Capture (Hospital A)';
       if (d.ok) {
-        toast('Camera capture complete — counts written to Redis ✓');
+        toast('Hospital A captured — counts written to Redis ✓');
+        refreshCameraImages();
         poll();
       } else {
         toast('Capture error: ' + d.error, true);
@@ -664,7 +687,7 @@ function triggerCapture() {
     })
     .catch(e => {
       btn.disabled = false;
-      btn.textContent = '📷 Capture Image';
+      btn.textContent = '📷 Capture (Hospital A)';
       toast('Network error: ' + e, true);
     });
 }
