@@ -6,51 +6,57 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Baymax** — a network of Fetch.ai uAgents that detect hospital supply shortfalls and autonomously negotiate + settle inter-facility transfers. A supply manager states an intent in natural language via ASI:One ("Hospital A is short on IV fluids"); the FRONT agent broadcasts the need, ranks offers from surplus facilities, composes a (possibly split) transfer, and settles it as a real Fetch **testnet** FET transaction — narrating each step back into the chat. Built for the Fetch.ai "From Intent to Action" challenge.
 
-**All code lives in `adyan-agent-communication-layer/`.** The repo root holds only that directory, `baymax_PRD_v2.md` (the product spec), and an image. Run every command from inside `adyan-agent-communication-layer/`; the virtualenv is at `adyan-agent-communication-layer/.venv`.
+**The agent code lives in `agent-communication-layer/`** — that's where every command below is run from. The repo is a multi-track monorepo: alongside it sit `redis/` (the Redis state bus + seed scripts), `hardware/` (camera → Claude Vision → Redis), `arize/` / `tracks/` (observability), `ui/` and `fetch/`, plus `baymax_PRD_v2.md` (the product spec).
+
+> ⚠️ **venv + secrets live in a sibling directory, not in the source dir.** Due to a directory rename during a `main` merge, the virtualenv and secrets are in `../adyan-agent-communication-layer/` (`.venv`, `.env`, `private_keys.json`) — *not* inside `agent-communication-layer/`. So: `cd agent-communication-layer && source ../adyan-agent-communication-layer/.venv/bin/activate`, then run `python <script>`.
+>
+> **Live mode needs `.env` co-located with `agent_base.py`.** `agent_base.py` calls `load_dotenv(Path(__file__).parent / ".env")` and the other scripts use bare `load_dotenv()` (cwd-relative) — neither reaches the sibling dir. The **offline harnesses run fine as-is** (they fall back to the public dev seeds in `agent_base.py`), but any **live** run (real seeds, `ANTHROPIC_API_KEY`, Browserbase, on-chain settlement) needs the secrets reachable from `agent-communication-layer/`: `ln -s ../adyan-agent-communication-layer/.env .env` (and likewise `private_keys.json`).
 
 ## Commands
 
 ```bash
-cd adyan-agent-communication-layer
-python -m venv .venv && source .venv/bin/activate     # Python 3.12+ (developed on 3.14)
-pip install -r requirements.txt
+cd agent-communication-layer
+source ../adyan-agent-communication-layer/.venv/bin/activate   # Python 3.12+ (developed on 3.14); venv lives in the sibling dir
+# first-time only, if recreating the venv from scratch:
+#   python -m venv ../adyan-agent-communication-layer/.venv && source ../adyan-agent-communication-layer/.venv/bin/activate
+#   pip install -r requirements.txt
 ```
 
-There is **no test runner, linter, or build step.** The verification harnesses below *are* the test suite — each is a self-contained, self-exiting script. Prefer `./.venv/bin/python <script>` so the right interpreter is used.
+There is **no test runner, linter, or build step.** The verification harnesses below *are* the test suite — each is a self-contained, self-exiting script. Commands below assume the sibling venv is **activated** (so `python` is the right interpreter); otherwise prefix each with `../adyan-agent-communication-layer/.venv/bin/python`.
 
 | Goal | Command |
 | :-- | :-- |
-| Run the full 3-agent negotiation in one process (Bureau) | `BAYMAX_EXIT_WHEN_DONE=1 ./.venv/bin/python baymax_agents.py` |
+| Run the full 3-agent negotiation in one process (Bureau) | `BAYMAX_EXIT_WHEN_DONE=1 python baymax_agents.py` |
 | Pick the scenario | prefix with `BAYMAX_ITEM="IV fluids"` (split, default) / `"saline"` (full cover) / `"sutures"` (no offer → escalation) |
-| FRONT chat→negotiate→narrate loop, no network | `BAYMAX_SELFTEST=1 ./.venv/bin/python front_agent.py` |
-| Offline end-to-end incl. settlement (chat→negotiate→settle→pay), no ASI:One/wallet | `./.venv/bin/python wave2_e2e_check.py` |
-| Payment-protocol handshake in isolation (2 agents, fake tx) | `PAYMENT_VERIFY_ONCHAIN=false ./.venv/bin/python two_agent_payment_spike.py` |
-| Re-derive agent addresses from seeds | `./.venv/bin/python -c "import agent_base; print(*(f'{f}: {agent_base.address_for(f)}' for f in ('Hospital A','Hospital B','Hospital C')), sep=chr(10))"` |
-| Negotiation against **live Redis** inventory (split sourced from `tracks/redis`) | `BAYMAX_REDIS=1 BAYMAX_ITEM="IV fluids" BAYMAX_NEED=200 BAYMAX_EXIT_WHEN_DONE=1 ./.venv/bin/python baymax_agents.py` |
-| Offline admin-gate + external-order E2E (chat→negotiate→admin orders→supplier→settle) | `./.venv/bin/python wave3_order_e2e_check.py` |
+| FRONT chat→negotiate→narrate loop, no network | `BAYMAX_SELFTEST=1 python front_agent.py` |
+| Offline end-to-end incl. settlement (chat→negotiate→settle→pay), no ASI:One/wallet | `python wave2_e2e_check.py` |
+| Payment-protocol handshake in isolation (2 agents, fake tx) | `PAYMENT_VERIFY_ONCHAIN=false python two_agent_payment_spike.py` |
+| Re-derive agent addresses from seeds | `python -c "import agent_base; print(*(f'{f}: {agent_base.address_for(f)}' for f in ('Hospital A','Hospital B','Hospital C')), sep=chr(10))"` |
+| Negotiation against **live Redis** inventory (split sourced from `tracks/redis`) | `BAYMAX_REDIS=1 BAYMAX_ITEM="IV fluids" BAYMAX_NEED=200 BAYMAX_EXIT_WHEN_DONE=1 python baymax_agents.py` |
+| Offline admin-gate + external-order E2E (chat→negotiate→admin orders→supplier→settle) | `python wave3_order_e2e_check.py` |
 
 **Live Redis bring-up** (needed once before the Redis-backed row above; `redis` + `python-dotenv` must be in `.venv`):
 
 ```bash
-docker compose -f ../tracks/redis/docker-compose.redis.yml up -d        # redis-stack on :6379
-(cd ../tracks/redis/src && REDIS_URL=redis://localhost:6379 \
-   ../../../adyan-agent-communication-layer/.venv/bin/python seed_demo_data.py)   # seed hospitals/inventory/surplus/forecast
+docker compose -f ../redis/docker-compose.redis.yml up -d        # redis-stack on :6379 (track lives at repo-root redis/)
+(cd ../redis/src && REDIS_URL=redis://localhost:6379 \
+   ../../adyan-agent-communication-layer/.venv/bin/python seed_demo_data.py)   # seed hospitals/inventory/surplus/forecast
 ```
 
-**Camera as the inventory source** (optional): `hardware/camera connection/sync_to_redis.py`
+**Camera as the inventory source** (optional): `../hardware/camera connection/sync_to_redis.py`
 counts saline per hospital via Claude Vision (green-straw divider → Hospital A left /
 B right) and writes `qty`/`pct`/`status` + `surplus` straight into the same Redis the
 negotiation reads. `surplus = max(0, count − reserve)` is what `redis_inventory` reads as
-`spare_capacity`. Keyless test path: `python "hardware/camera connection/sync_to_redis.py" --counts a=0,b=6`
-(only `redis` needed); real run uses the camera + `ANTHROPIC_API_KEY` (see `hardware/requirements.txt`).
+`spare_capacity`. Keyless test path: `python "../hardware/camera connection/sync_to_redis.py" --counts a=0,b=6`
+(only `redis` needed); real run uses the camera + `ANTHROPIC_API_KEY` (see `../hardware/requirements.txt`).
 Chain: shelf → camera → Redis → agents.
 
 **Live ASI:One / Agentverse (Mailbox mode):** run each agent in its own terminal (order does not matter), then do the one-time browser Mailbox connect from each agent's Inspector URL (see `README.md` and `DELIVERABLES.md`):
 
 ```bash
-./.venv/bin/python run_hospital_b.py     # surplus facility B
-./.venv/bin/python run_hospital_c.py     # surplus facility C
-./.venv/bin/python run_front.py          # Hospital A — ASI:One chat + payment entrypoint
+python run_hospital_b.py     # surplus facility B
+python run_hospital_c.py     # surplus facility C
+python run_front.py          # Hospital A — ASI:One chat + payment entrypoint
 ```
 
 ## Architecture
@@ -97,7 +103,7 @@ These are easy to get wrong and have all bitten this codebase before:
 - **Import `agent_base` *first*, before constructing any `Agent` or `Protocol`.** Python 3.14 removed the implicit current event loop, but `uagents` 0.25.2 calls `asyncio.get_event_loop()` in `Agent.__init__`. `agent_base` installs a loop as an import side effect. Every module that builds agents imports it first on purpose.
 - **Testnet only, fail-closed.** `agent_base.py` raises if `FETCH_NETWORK` is anything other than `testnet`/empty; `network="testnet"` is forced on every agent. Payment verification pins `NetworkConfig.fetchai_stable_testnet()` (chain `dorado-1`, denom `atestfet`). Never route to mainnet.
 - **Payment role is the inverse of the docs prose.** Use `Protocol(spec=payment_protocol_spec, role="seller")` for our service agent. The *installed* spec maps each role to the messages it may **RECEIVE**: `roles["seller"] = {CommitPayment, RejectPayment}` (what we receive after sending `RequestPayment`). Verify before trusting any doc:
-  `./.venv/bin/python -c "from uagents_core.contrib.protocols.payment import payment_protocol_spec as s; print({r:sorted(m.__name__ for m in ms) for r,ms in s.roles.items()})"`
+  `python -c "from uagents_core.contrib.protocols.payment import payment_protocol_spec as s; print({r:sorted(m.__name__ for m in ms) for r,ms in s.roles.items()})"`
 - **ASI:One renders the in-chat FET payment card from `RequestPayment.metadata`.** It reads `metadata["provider_agent_wallet"]` (the fetch1… payee) and `metadata["fet_network"]`. Send `RequestPayment` with `metadata=None` and ASI:One rejects it at ingestion with *"Failed to process payment response by agent"* — before any approval, no card renders. `settlement.request_payment()` always populates these keys (mirroring `fetchai/innovation-lab-examples/fet-example`). Adding metadata does **not** change the protocol schema digest, so manifest matching is unaffected.
 - **`ctx.agent.wallet` does not exist inside a handler** — `ctx.agent` is an `AgentRepresentation` (address/identity only). Call `register_recipient_wallet(agent)` once at construction time (where `agent.wallet` is available) and use `resolve_recipient_wallet(ctx)` inside handlers.
 - **Never call sync cosmpy in an async handler.** `LedgerClient.query_tx()` blocks the event loop (~20s on a slow/unreachable RPC); always wrap with `asyncio.to_thread(...)`.
@@ -126,4 +132,4 @@ These are easy to get wrong and have all bitten this codebase before:
 | `BROWSERBASE_API_KEY` / `BROWSERBASE_PROJECT_ID` / `MODEL_API_KEY` | Browserbase/Stagehand credentials (only for `BAYMAX_BROWSERBASE=1`). |
 | `BAYMAX_*_SEED`, `FETCH_NETWORK` | Agent seeds (loaded from `.env`); network guardrail (testnet only) |
 
-Secrets (`.env`, `private_keys.json`) and `.venv/` are gitignored. `DELIVERABLES.md` tracks submission status and the manual, browser-gated Mailbox-connect checklist; the live ASI:One signed-payment leg is the one path not verifiable offline.
+Secrets and the venv currently live in the sibling `../adyan-agent-communication-layer/` (`.env`, `private_keys.json`, `.venv/`). `.gitignore` covers `.venv/`, `.env`, `__pycache__/`, `*.pyc` — note it does **not** list `private_keys.json`, so if you ever copy/symlink that file into the tracked `agent-communication-layer/`, add it to `.gitignore` first to avoid committing keys. `DELIVERABLES.md` tracks submission status and the manual, browser-gated Mailbox-connect checklist; the live ASI:One signed-payment leg is the one path not verifiable offline.
