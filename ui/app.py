@@ -38,7 +38,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
-from flask import Flask, Response, jsonify, render_template, request, send_file
+from flask import Flask, Response, jsonify, request, send_file
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
@@ -343,8 +343,10 @@ def _approval_page(title: str, body: str) -> str:
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.route("/")
-def dashboard():
-    return render_template("index.html", region=REGION)
+def root():
+    # The UI now lives entirely in the Next.js app (web/, http://localhost:3000).
+    # This Flask service is the headless API backend that app proxies.
+    return jsonify({"service": "baymax-api", "ui": "http://localhost:3000", "region": REGION})
 
 
 @app.route("/api/state")
