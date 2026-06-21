@@ -1,5 +1,5 @@
 """
-sync_to_redis.py — push camera-detected supply counts into the Stockpile Redis.
+sync_to_redis.py — push camera-detected supply counts into the Baymax Redis.
 
 The vision pipeline (bottle_counter.py) counts saline on each side of the green
 straw -> Hospital A (left) and Hospital B (right). This bridge writes those
@@ -110,7 +110,7 @@ def sync(counts: dict, *, item: str, capacity: int, reserve: int) -> None:
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="Push camera supply counts into Stockpile Redis.")
+    p = argparse.ArgumentParser(description="Push camera supply counts into Baymax Redis.")
     src = p.add_mutually_exclusive_group()
     src.add_argument("--image", help="Vision-count a saved image instead of the camera.")
     src.add_argument("--from-json", dest="from_json",
@@ -140,7 +140,7 @@ def main() -> None:
         print(f"Notes:  {counts['notes']}")
     print(f"Writing {args.item} to Redis (REDIS_URL={os.getenv('REDIS_URL', 'redis://localhost:6379')}):")
     sync(counts, item=args.item, capacity=args.capacity, reserve=args.reserve)
-    print("Done — the negotiation will read these via STOCKPILE_REDIS=1.")
+    print("Done — the negotiation will read these via BAYMAX_REDIS=1.")
 
 
 if __name__ == "__main__":

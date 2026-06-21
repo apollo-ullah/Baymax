@@ -1,6 +1,6 @@
 """settlement.py — STREAM PAY: production SELLER-side Payment Protocol logic.
 
-The negotiation core (stockpile_agents.py) ends a successful deal at its
+The negotiation core (baymax_agents.py) ends a successful deal at its
 `settle_transfer()` hook. PAY replaces the Wave 0 stub with the real Fetch
 **Payment Protocol** handshake on the FET testnet:
 
@@ -43,9 +43,13 @@ spec, never the prose.
 
 ──────────────────────────────────────────────────────────────────────────────
 Environment knobs (see .env additions in the PAY report — no secrets):
-    STOCKPILE_PAYMENT_AMOUNT_FET   default "0.1"   FET charged per settlement
+    BAYMAX_PAYMENT_AMOUNT_FET   default "0.1"   FET charged per settlement
     PAYMENT_VERIFY_ONCHAIN         default "true"  "false" => skip cosmpy query
                                                    and trust the commit (DEV ONLY)
+    BAYMAX_PAYMENT_VERIFY_TIMEOUT default "20"  wall-clock budget (s) for the
+                                                   bounded on-chain verification
+    PAYMENT_VERIFY_STRICT          default "false" "true" => CancelPayment when the
+                                                   RPC is unreachable (else accept)
     FETCH_NETWORK                  "testnet" (guardrail; we pin testnet config)
 """
 
@@ -53,6 +57,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
+from enum import Enum
 from typing import Optional
 
 # Import agent_base FIRST so the Python 3.14 event-loop workaround is installed
@@ -81,13 +87,30 @@ from protocol import (
 PAYMENT_ROLE = "seller"
 
 #: FET amount charged per settlement (string, as the protocol expects).
-PAYMENT_AMOUNT_FET = os.getenv("STOCKPILE_PAYMENT_AMOUNT_FET", "0.1")
+PAYMENT_AMOUNT_FET = os.getenv("BAYMAX_PAYMENT_AMOUNT_FET", "0.1")
 
 #: Seconds the user has to approve + sign the payment before it expires.
-PAYMENT_DEADLINE_S = int(os.getenv("STOCKPILE_PAYMENT_DEADLINE_S", "300"))
+PAYMENT_DEADLINE_S = int(os.getenv("BAYMAX_PAYMENT_DEADLINE_S", "300"))
 
 #: testnet denom for FET on the Fetch stable testnet (dorado-1).
 TESTNET_DENOM = "atestfet"
+
+#: Total wall-clock budget (seconds) for verifying a CommitPayment on-chain. The
+#: handler NEVER blocks longer than this, so a slow/unreachable dorado-1 RPC can no
+#: longer freeze settlement; we poll within the budget to absorb indexing lag.
+PAYMENT_VERIFY_TIMEOUT_S = float(os.getenv("BAYMAX_PAYMENT_VERIFY_TIMEOUT", "20"))
+
+#: Cap (seconds) for a single query attempt, so one hung cosmpy call cannot eat the
+#: whole budget (its worker thread is orphaned and we move on).
+_PAYMENT_VERIFY_ATTEMPT_S = float(os.getenv("BAYMAX_PAYMENT_VERIFY_ATTEMPT", "8"))
+
+#: Strict mode: when the RPC is unreachable / times out (verification INCONCLUSIVE),
+#: REJECT the payment instead of accepting it on ASI:One's own verification. Default
+#: false — ASI:One verifies the tx on-chain BEFORE sending CommitPayment, so an
+#: unreachable re-check should not reject a real, already-settled payment.
+PAYMENT_VERIFY_STRICT = os.getenv("PAYMENT_VERIFY_STRICT", "").strip().lower() in (
+    "1", "true", "yes", "on",
+)
 
 #: agent-address -> our FET wallet (fetch1...) address. Populated by
 #: register_recipient_wallet() at agent-construction time, so request_payment()
@@ -163,55 +186,118 @@ def make_funds(amount_fet: Optional[str] = None) -> Funds:
 # On-chain verification (DEFENSIVE — must never hang or crash the agent).
 # ---------------------------------------------------------------------------
 
-def verify_payment_onchain(transaction_id: str) -> bool:
-    """Return True iff `transaction_id` is a successful tx on the FET testnet.
+class VerifyResult(str, Enum):
+    """Outcome of an on-chain verification attempt.
 
-    Defensive by design:
-      * If PAYMENT_VERIFY_ONCHAIN is false, SKIP the chain query and treat the
-        commit as valid (DEV/SPIKE only — no real settlement guarantee).
-      * Any cosmpy/network error (not-found, RPC down, timeout) => returns False
-        rather than propagating, so a flaky node can never wedge the handler.
+    The key distinction is NOT_FOUND (the RPC answered and the tx is absent or
+    unsuccessful — a confident negative) vs INCONCLUSIVE (the node was unreachable
+    or errored — we genuinely cannot tell). The handler rejects only on a confident
+    negative, so a flaky RPC never causes a real, already-settled payment to be
+    cancelled.
+    """
+
+    VERIFIED = "verified"          # tx found and successful on the testnet
+    NOT_FOUND = "not_found"        # RPC reachable, tx absent or unsuccessful
+    INCONCLUSIVE = "inconclusive"  # RPC unreachable / timed out — cannot tell
+    SKIPPED = "skipped"            # PAYMENT_VERIFY_ONCHAIN=false (DEV)
+
+
+def _verify_status(transaction_id: str) -> "VerifyResult":
+    """Classify `transaction_id` on the FET testnet (blocking; run in a thread).
+
+    Returns a VerifyResult, distinguishing a confident NOT_FOUND from an
+    INCONCLUSIVE (unreachable node) so the caller can reject only when sure.
     """
     if not _verify_onchain_enabled():
-        return True  # DEV ONLY: trust the commit without touching the chain.
-
+        return VerifyResult.SKIPPED
     if not transaction_id:
-        return False
+        return VerifyResult.NOT_FOUND
 
     try:
         # Imported lazily so importing settlement never requires a live node.
         from cosmpy.aerial.client import LedgerClient, NetworkConfig
+        from cosmpy.aerial.exceptions import NotFoundError
 
         client = LedgerClient(NetworkConfig.fetchai_stable_testnet())
-        resp = client.query_tx(transaction_id)
-        return bool(resp.is_successful())
+        try:
+            resp = client.query_tx(transaction_id)
+        except NotFoundError:
+            # Reachable RPC, tx not indexed (yet) or absent — a confident negative
+            # for THIS poll (the retry loop re-checks within the budget).
+            return VerifyResult.NOT_FOUND
+        return (
+            VerifyResult.VERIFIED if resp.is_successful() else VerifyResult.NOT_FOUND
+        )
     except Exception:
-        # NotFoundError, grpc.RpcError, connection timeouts, etc. all land here.
-        return False
+        # grpc.RpcError, connection refused/timeout, contract-version failure, etc.
+        # We cannot tell — do NOT report a false negative.
+        return VerifyResult.INCONCLUSIVE
+
+
+def verify_payment_onchain(transaction_id: str) -> bool:
+    """Backward-compatible bool: True iff verified (or verification skipped).
+
+    Retained for the spike + external imports; new code should use _verify_status
+    / verify_payment_onchain_with_retry to distinguish INCONCLUSIVE from NOT_FOUND.
+    """
+    return _verify_status(transaction_id) in (
+        VerifyResult.VERIFIED, VerifyResult.SKIPPED,
+    )
 
 
 async def verify_payment_onchain_with_retry(
     transaction_id: str,
     *,
-    retries: int = 6,
+    timeout_s: Optional[float] = None,
     delay_s: float = 2.0,
-) -> bool:
-    """Poll testnet until the tx is indexed, or give up.
+) -> "VerifyResult":
+    """Poll the testnet for `transaction_id` within a bounded wall-clock budget.
 
-    ASI:One sends CommitPayment as soon as the wallet signs; the dorado-1 RPC
-    often needs a few seconds before query_tx succeeds. A single immediate query
-    falsely fails and we CancelPayment — which ASI:One surfaces as
-    "Failed to process payment response by agent".
+    Returns the BEST result observed before the deadline: VERIFIED as soon as the
+    tx confirms (returns immediately), otherwise the last NOT_FOUND / INCONCLUSIVE
+    seen when the budget expires.
+
+    Why bounded: ASI:One sends CommitPayment the instant the wallet signs, and the
+    dorado-1 RPC may need a few seconds to index (NOT_FOUND) or may be unreachable
+    (INCONCLUSIVE). The old fixed-retry version could block the handler for minutes
+    on a hung RPC, so ASI:One would sit on "processing your response" forever. Each
+    query is capped (_PAYMENT_VERIFY_ATTEMPT_S) via asyncio.wait, which returns at
+    the cap WITHOUT awaiting a still-running query (we cannot cancel a thread that
+    is mid blocking-call) — the orphaned worker thread finishes harmlessly later and
+    its result is discarded. (asyncio.wait_for would instead wait for the orphan,
+    defeating the bound.)
     """
     if not _verify_onchain_enabled():
-        return True
-    for attempt in range(max(1, retries)):
-        ok = await asyncio.to_thread(verify_payment_onchain, transaction_id)
-        if ok:
-            return True
-        if attempt < retries - 1:
-            await asyncio.sleep(delay_s)
-    return False
+        return VerifyResult.SKIPPED
+
+    budget = PAYMENT_VERIFY_TIMEOUT_S if timeout_s is None else timeout_s
+    deadline = time.monotonic() + max(0.0, budget)
+    last = VerifyResult.INCONCLUSIVE
+    while time.monotonic() < deadline:
+        remaining = deadline - time.monotonic()
+        task = asyncio.ensure_future(asyncio.to_thread(_verify_status, transaction_id))
+        done, _pending = await asyncio.wait(
+            {task}, timeout=min(remaining, _PAYMENT_VERIFY_ATTEMPT_S),
+        )
+        if task in done:
+            try:
+                last = task.result()
+            except Exception:
+                last = VerifyResult.INCONCLUSIVE
+        else:
+            # Query still running past the cap — orphan it (a thread mid
+            # blocking-call cannot be cancelled) and swallow its eventual result so
+            # asyncio does not warn about an un-retrieved exception.
+            task.add_done_callback(lambda t: t.cancelled() or t.exception())
+            last = VerifyResult.INCONCLUSIVE
+        if last == VerifyResult.VERIFIED:
+            return last
+        # NOT_FOUND (indexing lag) and INCONCLUSIVE (flaky RPC) are both worth
+        # another poll while the budget allows.
+        if time.monotonic() + delay_s >= deadline:
+            break
+        await asyncio.sleep(delay_s)
+    return last
 
 
 def _resolve_pending_key(reference: Optional[str]) -> str:
@@ -245,7 +331,7 @@ async def _finalize_from_payment(
     pending = _PAYMENT_PENDING.pop(key, None)
     if not pending:
         return
-    from stockpile_agents import finalize_after_payment  # lazy import
+    from baymax_agents import finalize_after_payment  # lazy import
 
     await finalize_after_payment(
         ctx, pending["req_id"], key, tx_id=tx_id,
@@ -256,7 +342,7 @@ async def _fail_from_payment(ctx: Context, reference: Optional[str], reason: str
     pending = _PAYMENT_PENDING.pop(_resolve_pending_key(reference), None)
     if not pending:
         return
-    from stockpile_agents import fail_after_payment  # lazy import
+    from baymax_agents import fail_after_payment  # lazy import
 
     await fail_after_payment(ctx, pending["req_id"], reason)
 
@@ -282,44 +368,67 @@ def build_payment_protocol() -> Protocol:
             f"tx={msg.transaction_id} ref={msg.reference} "
             f"amount={msg.funds.amount} {msg.funds.currency}"
         )
-        # Run the (blocking) cosmpy on-chain query in a worker thread so a slow or
-        # unreachable testnet RPC can never freeze the agent's event loop (it would
-        # otherwise stall all other messages/intervals for the whole query).
-        ok = await verify_payment_onchain_with_retry(msg.transaction_id)
-        if ok:
-            verified = "skipped (PAYMENT_VERIFY_ONCHAIN=false)" \
-                if not _verify_onchain_enabled() else "succeeded on testnet"
+        # Bounded on-chain verification: NEVER blocks longer than
+        # PAYMENT_VERIFY_TIMEOUT_S (runs the blocking cosmpy query in a worker
+        # thread), so a slow/unreachable dorado-1 RPC cannot freeze settlement —
+        # ASI:One would otherwise sit on "processing your response" indefinitely.
+        result = await verify_payment_onchain_with_retry(msg.transaction_id)
+
+        # Accept on VERIFIED/SKIPPED. On INCONCLUSIVE (RPC unreachable/timed out)
+        # accept too UNLESS strict mode — ASI:One verifies the tx on-chain before
+        # sending CommitPayment, so an unreachable re-check must not reject a real,
+        # already-settled payment. Reject only on NOT_FOUND (a confident negative).
+        accept = result in (VerifyResult.VERIFIED, VerifyResult.SKIPPED) or (
+            result == VerifyResult.INCONCLUSIVE and not PAYMENT_VERIFY_STRICT
+        )
+
+        if accept:
+            if result == VerifyResult.VERIFIED:
+                note = "verified on testnet"
+                chat = (
+                    f"**payment_confirmed** — Testnet settlement verified on-chain "
+                    f"(tx `{msg.transaction_id}`)."
+                )
+            elif result == VerifyResult.SKIPPED:
+                note = "skipped (PAYMENT_VERIFY_ONCHAIN=false)"
+                chat = (
+                    f"**payment_confirmed** — Testnet settlement complete "
+                    f"(tx `{msg.transaction_id}`)."
+                )
+            else:  # INCONCLUSIVE, accepted on ASI:One's own verification
+                note = "inconclusive (testnet RPC unreachable) — accepted on ASI:One verification"
+                chat = (
+                    f"**payment_confirmed** — Settlement complete (tx "
+                    f"`{msg.transaction_id}`); on-chain re-verification was "
+                    f"inconclusive (testnet RPC unreachable)."
+                )
             ctx.logger.info(
-                f"[payment] Verification {verified} for tx={msg.transaction_id} "
+                f"[payment] Verification {note} for tx={msg.transaction_id} "
                 f"-> sending CompletePayment."
             )
             await ctx.send(sender, CompletePayment(transaction_id=msg.transaction_id))
-            await _narrate_payment(
-                ctx,
-                msg.reference,
-                f"**payment_confirmed** — Testnet settlement complete "
-                f"(tx `{msg.transaction_id}`).",
-            )
+            await _narrate_payment(ctx, msg.reference, chat)
             await _finalize_from_payment(ctx, msg.reference, msg.transaction_id)
         else:
+            reason = (
+                "on-chain tx not found or unsuccessful"
+                if result == VerifyResult.NOT_FOUND
+                else "on-chain verification could not be completed (strict mode, RPC unreachable)"
+            )
             ctx.logger.warning(
-                f"[payment] Verification FAILED for tx={msg.transaction_id} "
-                f"-> sending CancelPayment."
+                f"[payment] Verification {result.value} for tx={msg.transaction_id} "
+                f"-> sending CancelPayment ({reason})."
             )
             await ctx.send(sender, CancelPayment(
                 transaction_id=msg.transaction_id,
-                reason="on-chain verification failed (tx not found or unsuccessful)",
+                reason=reason,
             ))
             await _narrate_payment(
                 ctx,
                 msg.reference,
-                f"**payment_failed** — Could not verify tx `{msg.transaction_id}` "
-                f"on testnet.",
+                f"**payment_failed** — {reason} (tx `{msg.transaction_id}`).",
             )
-            await _fail_from_payment(
-                ctx, msg.reference,
-                "on-chain verification failed (tx not found or unsuccessful)",
-            )
+            await _fail_from_payment(ctx, msg.reference, reason)
 
     @proto.on_message(RejectPayment)
     async def on_reject(ctx: Context, sender: str, msg: RejectPayment):
@@ -364,7 +473,7 @@ async def request_payment(
     # Testnet signals the ASI:One wallet card reads to charge TestFET (Dorado /
     # stable-testnet) rather than mainnet FET. The official fet-example sets
     # mainnet="false" + fet_network="stable-testnet" (driven by FET_USE_TESTNET=true
-    # in its .env); we hardcode the testnet values because STOCKPILE is testnet-only
+    # in its .env); we hardcode the testnet values because Baymax is testnet-only
     # (agent_base fails closed on any non-testnet network). "test"="true" mirrors the
     # Fetch.ai team's guidance to flag the payment as TestFET (harmless superset —
     # the documented card keys are mainnet/fet_network; extra string keys are ignored).
@@ -375,7 +484,7 @@ async def request_payment(
         "test": "true",
         "content": (
             description
-            or "Approve to finalize the STOCKPILE inter-facility transfer settlement."
+            or "Approve to finalize the Baymax inter-facility transfer settlement."
         ),
     }
 
@@ -416,21 +525,21 @@ async def request_payment(
 def _amount_for_total(total_units: int) -> str:
     """FET to charge for a settlement.
 
-    Per-unit when STOCKPILE_PAYMENT_PER_UNIT_FET is set (amount = per_unit *
-    units, minimum one unit), otherwise the flat STOCKPILE_PAYMENT_AMOUNT_FET.
+    Per-unit when BAYMAX_PAYMENT_PER_UNIT_FET is set (amount = per_unit *
+    units, minimum one unit), otherwise the flat BAYMAX_PAYMENT_AMOUNT_FET.
     Read at call time so deployments/tests can change pricing without re-import.
     """
-    per_unit = os.getenv("STOCKPILE_PAYMENT_PER_UNIT_FET", "").strip()
+    per_unit = os.getenv("BAYMAX_PAYMENT_PER_UNIT_FET", "").strip()
     if per_unit:
         try:
             return str(round(float(per_unit) * max(int(total_units), 1), 6))
         except (ValueError, TypeError):
             pass
-    return os.getenv("STOCKPILE_PAYMENT_AMOUNT_FET", PAYMENT_AMOUNT_FET)
+    return os.getenv("BAYMAX_PAYMENT_AMOUNT_FET", PAYMENT_AMOUNT_FET)
 
 
 # ---------------------------------------------------------------------------
-# Integrator entry point — called from stockpile_agents.settle_transfer.
+# Integrator entry point — called from baymax_agents.settle_transfer.
 # ---------------------------------------------------------------------------
 
 async def settle_via_payment_protocol(
@@ -442,7 +551,7 @@ async def settle_via_payment_protocol(
 ) -> str:
     """Kick off settlement for a completed negotiation via the Payment Protocol.
 
-    The integrator wires this into stockpile_agents.settle_transfer. It computes
+    The integrator wires this into baymax_agents.settle_transfer. It computes
     the charge for `plan`, sends a RequestPayment to `user_address` (the ASI:One
     user who must approve the FET payment), and returns a settlement reference.
 
@@ -470,7 +579,7 @@ async def settle_via_payment_protocol(
     total = sum(getattr(a, "quantity", 0) for a in legs)
     amount = _amount_for_total(total)
     description = (
-        f"STOCKPILE inter-facility transfer settlement {req_id}: "
+        f"Baymax inter-facility transfer settlement {req_id}: "
         f"{n} leg(s), {total} unit(s) total."
     )
     await request_payment(

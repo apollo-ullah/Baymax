@@ -29,16 +29,16 @@ Contract notes:
 ──────────────────────────────────────────────────────────────────────────────
 SETTLEMENT WIRING (Wave 2 — direct seam)
 ──────────────────────────────────────────────────────────────────────────────
-The negotiation core ends a successful deal at stockpile_agents.settle_transfer().
+The negotiation core ends a successful deal at baymax_agents.settle_transfer().
 This runner registers the real handler on the core via
-stockpile_agents.register_settlement_hook(settle_via_payment_protocol), so the
+baymax_agents.register_settlement_hook(settle_via_payment_protocol), so the
 instant a deal settles, settle_transfer() delegates to the Payment Protocol —
 sending a RequestPayment to the ASI:One chat user (the negotiation's stored
 `reply_to`) for the FINAL settled plan (post re-plan). The user's wallet replies
 CommitPayment, which the Payment Protocol's on_commit handler (attached here)
 verifies on-chain and answers with CompletePayment / CancelPayment. No polling,
-no double-fire. Per-transfer pricing is honored via STOCKPILE_PAYMENT_PER_UNIT_FET
-(falls back to the flat STOCKPILE_PAYMENT_AMOUNT_FET).
+no double-fire. Per-transfer pricing is honored via BAYMAX_PAYMENT_PER_UNIT_FET
+(falls back to the flat BAYMAX_PAYMENT_AMOUNT_FET).
 
 Run:  ./.venv/bin/python run_front.py
 Then complete the one-time Agentverse Mailbox connect (see the printed banner)
@@ -50,14 +50,14 @@ from __future__ import annotations
 import os
 
 # Mailbox runners need a longer offer window and lighter chat narration — set
-# BEFORE importing stockpile_agents (reads OFFER_TIMEOUT at import time).
-os.environ.setdefault("STOCKPILE_OFFER_TIMEOUT", "30")
-os.environ.setdefault("STOCKPILE_SPARSE_NARRATION", "1")
+# BEFORE importing baymax_agents (reads OFFER_TIMEOUT at import time).
+os.environ.setdefault("BAYMAX_OFFER_TIMEOUT", "30")
+os.environ.setdefault("BAYMAX_SPARSE_NARRATION", "1")
 
 # Use the live Redis inventory backend (tracks/redis) for the real demo. Safe by
 # default: redis_inventory.py falls back to the deterministic mock if Redis is
-# unreachable, so this never breaks the live run. Override with STOCKPILE_REDIS=0.
-os.environ.setdefault("STOCKPILE_REDIS", "1")
+# unreachable, so this never breaks the live run. Override with BAYMAX_REDIS=0.
+os.environ.setdefault("BAYMAX_REDIS", "1")
 
 # Import agent_base FIRST so the Python 3.14 event-loop workaround is installed
 # before ANY Agent is constructed. front_agent and settlement both import it too,
@@ -66,16 +66,16 @@ import agent_base  # noqa: F401  (side-effect: installs current event loop)
 
 # Live ASI:One narration is rate-limited by the chat relay (429s when every
 # milestone is streamed). Default to sparse narration (only the key states). Must
-# be set BEFORE importing stockpile_agents, which reads it at import. Override with
-# STOCKPILE_SPARSE_NARRATION=0.
-os.environ.setdefault("STOCKPILE_SPARSE_NARRATION", "1")
+# be set BEFORE importing baymax_agents, which reads it at import. Override with
+# BAYMAX_SPARSE_NARRATION=0.
+os.environ.setdefault("BAYMAX_SPARSE_NARRATION", "1")
 
 # Reuse the EXACT FRONT construction path (chat protocol + negotiation handlers)
 # so run_front.py and front_agent.py can never drift apart.
 from front_agent import build_front_agent
 
 # The negotiation core — so we can register the real settlement handler on it.
-import stockpile_agents as sp
+import baymax_agents as sp
 
 # PAY stream: the seller-side Payment Protocol + the settlement entrypoint.
 from settlement import (
@@ -109,7 +109,7 @@ def build_agent():
     wallet_addr = register_recipient_wallet(agent)
 
     # (4) Wire settlement DIRECTLY: register the PAY handler on the negotiation
-    # core so stockpile_agents.settle_transfer() delegates to it the instant a
+    # core so baymax_agents.settle_transfer() delegates to it the instant a
     # deal settles. settle_transfer passes the FINAL accepted-leg plan and the
     # chat user (reply_to) it already holds — so billing reflects exactly what
     # settled (post re-plan), with no polling and no double-fire.
@@ -121,7 +121,7 @@ def build_agent():
 if __name__ == "__main__":
     agent, wallet_addr = build_agent()
     print("=" * 70)
-    print("STOCKPILE FRONT agent (Hospital A) — Mailbox runner (chat + payment)")
+    print("Baymax FRONT agent (Hospital A) — Mailbox runner (chat + payment)")
     print(f"  name        : {agent.name}")
     print(f"  address     : {agent.address}")
     print(f"  FET wallet  : {wallet_addr}")

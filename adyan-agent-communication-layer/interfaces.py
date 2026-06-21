@@ -10,7 +10,7 @@ implementations must match them exactly.
 
 These functions intentionally do NOT import uagents: the seams are plain Python
 so the inventory/intelligence owners need not touch the agent framework. The
-agent layer (agent_base.py / stockpile_agents.py) adapts between these plain
+agent layer (agent_base.py / baymax_agents.py) adapts between these plain
 types and the protocol.py wire models.
 """
 
@@ -174,7 +174,7 @@ def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
 def get_inventory(hospital: str, item: str) -> InventoryState:
     """Return the live inventory of `item` at `hospital`.
 
-    Workstream C is now LIVE: when STOCKPILE_REDIS=1, this reads the teammates'
+    Workstream C is now LIVE: when BAYMAX_REDIS=1, this reads the teammates'
     Redis (via redis_inventory.py) and returns an InventoryState. On ANY failure
     — Redis unreachable, missing `redis` lib, hospital unknown to Redis — it
     falls back to the deterministic mock below, so the seam NEVER hangs (FR1) and
@@ -187,14 +187,14 @@ def get_inventory(hospital: str, item: str) -> InventoryState:
     if redis_inventory.redis_enabled():
         try:
             inv = redis_inventory.redis_get_inventory(hospital, item)
-            logging.getLogger("stockpile.inventory").info(
+            logging.getLogger("baymax.inventory").info(
                 "[inventory] backend=redis %s/%s qty=%s spare=%s safety=%s present=%s",
                 hospital, item, inv.qty, inv.spare_capacity,
                 inv.safety_threshold, inv.present,
             )
             return inv
         except Exception as exc:  # noqa: BLE001 — fail-closed to the mock
-            logging.getLogger("stockpile.inventory").warning(
+            logging.getLogger("baymax.inventory").warning(
                 "[inventory] backend=redis FAILED for %s/%s (%s) -> mock fallback",
                 hospital, item, exc,
             )
@@ -221,7 +221,7 @@ def _mock_get_inventory(hospital: str, item: str) -> InventoryState:
 
 
 def distance_between(a: str, b: str) -> float:
-    """Helper: km between two facilities. In Redis mode (STOCKPILE_REDIS=1) the
+    """Helper: km between two facilities. In Redis mode (BAYMAX_REDIS=1) the
     coordinates come from Redis meta so distance matches the live inventory;
     otherwise (and on any Redis failure) it uses the mock coordinates. Used by
     the agent layer to populate SupplyOffer.distance_km."""

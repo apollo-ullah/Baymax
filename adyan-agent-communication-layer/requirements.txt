@@ -1,4 +1,4 @@
-# Stockpile agent-communication layer — pinned to the versions verified in Wave 0.
+# Baymax agent-communication layer — pinned to the versions verified in Wave 0.
 # Python 3.12+ (developed/verified on 3.14).
 
 # Fetch.ai agent framework + protocol models (chat + payment).
@@ -14,7 +14,7 @@ cosmpy>=0.11.0
 python-dotenv>=1.0.0
 
 # Live inventory seam (Workstream C): redis_inventory.py reads the teammates'
-# Redis (tracks/redis) when STOCKPILE_REDIS=1, falling back to the mock when
+# Redis (tracks/redis) when BAYMAX_REDIS=1, falling back to the mock when
 # absent. Optional at runtime — the offline harnesses do not need Redis.
 redis>=5.0.0
 

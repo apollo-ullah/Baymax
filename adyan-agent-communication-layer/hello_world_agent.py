@@ -13,7 +13,7 @@ from uagents_core.contrib.protocols.chat import (
 README_PATH = os.path.join(os.path.dirname(__file__), "README.md")
 
 agent = Agent(
-    name="stockpile_hello",
+    name="baymax_hello",
     port=8001,
     seed=os.getenv("AGENT_SEED_PHRASE"),
     mailbox=True,
@@ -32,7 +32,7 @@ async def handle(ctx: Context, sender: str, msg: ChatMessage):
         timestamp=datetime.utcnow(), acknowledged_msg_id=msg.msg_id))
     for item in msg.content:
         if isinstance(item, TextContent):
-            await ctx.send(sender, text_msg(f"Stockpile here. You said: {item.text}"))
+            await ctx.send(sender, text_msg(f"Baymax here. You said: {item.text}"))
 
 @chat_proto.on_message(ChatAcknowledgement)
 async def ack(ctx: Context, sender: str, msg: ChatAcknowledgement):

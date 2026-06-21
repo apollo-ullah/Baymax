@@ -1,8 +1,8 @@
-# Stockpile — Product Requirements Document
+# Baymax — Product Requirements Document
 
 | | |
 | :-- | :-- |
-| **Product** | Stockpile |
+| **Product** | Baymax |
 | **One-liner** | A network of hospital agents that detect supply shortfalls and autonomously negotiate and settle transfers across facilities, before anyone runs out. |
 | **Version** | 0.2 (Cal Hacks build, supersedes 0.1) |
 | **Status** | In active build |
@@ -15,7 +15,7 @@
 
 Hospitals run lean on consumable supplies and absorb uneven demand shocks: one facility runs critically short on an item while another nearby sits on surplus of the same item. Today that imbalance is reconciled slowly and manually, by phone, if it is caught at all.
 
-Stockpile is an autonomous coordination layer across a network of facilities. Each hospital runs an agent that knows its real-time stock (from edge vision and sensors) and its projected demand (from weather and illness signals). When a facility is detected heading into a shortfall, its agent is reachable through ASI:One, negotiates with the other facilities' agents, and settles a transfer as an on-chain transaction. The output is operational and routes into existing transfer and procurement workflows. It never makes clinical decisions.
+Baymax is an autonomous coordination layer across a network of facilities. Each hospital runs an agent that knows its real-time stock (from edge vision and sensors) and its projected demand (from weather and illness signals). When a facility is detected heading into a shortfall, its agent is reachable through ASI:One, negotiates with the other facilities' agents, and settles a transfer as an on-chain transaction. The output is operational and routes into existing transfer and procurement workflows. It never makes clinical decisions.
 
 The novel work is the coordination between institutions, not the perception inside one. Vision-based inventory monitoring is a commodity. The defensible system is the agent network that detects, negotiates, and settles cross-facility imbalance autonomously.
 
@@ -34,7 +34,7 @@ The novel work is the coordination between institutions, not the perception insi
 - **No autonomous movement of controlled substances.** Scope is non-scheduled consumables; recommendations route to existing custody and procurement protocols rather than executing them.
 - **No ambulance or patient routing.** Future direction only.
 - **No doctor-to-agent interface.** Future direction only.
-- **Not an ERP or procurement replacement.** Stockpile sits on top of existing systems and hands off.
+- **Not an ERP or procurement replacement.** Baymax sits on top of existing systems and hands off.
 - **No real hospital integration.** The network is simulated for the demo; the agent logic, negotiation, and transaction are real.
 
 ---
@@ -43,7 +43,7 @@ The novel work is the coordination between institutions, not the perception insi
 
 The premise is scoped to survive a healthcare-literate judge.
 
-**Real-world grounding.** Within a single health system (multi-facility operators) and within regional hospital mutual-aid compacts, facilities already load-balance supplies across sites, manually. Stockpile automates the detection, the match, and the settlement, then hands the result to the existing transfer process.
+**Real-world grounding.** Within a single health system (multi-facility operators) and within regional hospital mutual-aid compacts, facilities already load-balance supplies across sites, manually. Baymax automates the detection, the match, and the settlement, then hands the result to the existing transfer process.
 
 **In scope.** High-churn, non-scheduled consumables: IV fluids, saline, PPE, sutures, certain blood products under existing agreements. Inter-facility transfer of these is routine and legally uncomplicated.
 
@@ -53,7 +53,7 @@ The premise is scoped to survive a healthcare-literate judge.
 
 ## 4. Target users
 
-| Persona | Need | What Stockpile gives them |
+| Persona | Need | What Baymax gives them |
 | :-- | :-- | :-- |
 | **Supply manager, multi-facility system** (primary) | Never get caught short when the network has slack | Automatic detection and a one-tap transfer |
 | **Regional supply-chain lead** | Visibility into imbalance across sites | Live network view and an audit trail of settled transfers |
@@ -75,7 +75,7 @@ Everything beyond P0 in Section 9 layers on top of this and degrades gracefully.
 
 Vision-based inventory monitoring and demand forecasting are mature and commoditized (Chooch and others provide real-time inventory audits, anomaly detection, and ERP-integrated forecasting). Those platforms are single-tenant by design: each customer's data is walled off.
 
-Stockpile is the opposite premise and a different layer: coordination across the wall. A perception platform could be the camera layer underneath Stockpile; it is a component, not a competitor. The hard problem is agent-to-agent negotiation and settlement across organizational boundaries, a multi-agent systems problem, not a computer-vision one. That is why the demo hero is the negotiation and the transaction, not the shelf.
+Baymax is the opposite premise and a different layer: coordination across the wall. A perception platform could be the camera layer underneath Baymax; it is a component, not a competitor. The hard problem is agent-to-agent negotiation and settlement across organizational boundaries, a multi-agent systems problem, not a computer-vision one. That is why the demo hero is the negotiation and the transaction, not the shelf.
 
 ---
 

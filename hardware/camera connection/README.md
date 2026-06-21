@@ -2,7 +2,7 @@
 
 ## What this does
 
-A MacBook camera captures a live frame of a physical shelf divided into two hospital supply sections. That frame is sent to Claude Vision, which counts the saline on each side and returns structured inventory data. The output feeds directly into the Stockpile agent pipeline as the real-time inventory signal for Hospital A and Hospital B.
+A MacBook camera captures a live frame of a physical shelf divided into two hospital supply sections. That frame is sent to Claude Vision, which counts the saline on each side and returns structured inventory data. The output feeds directly into the Baymax agent pipeline as the real-time inventory signal for Hospital A and Hospital B.
 
 ## Physical setup
 

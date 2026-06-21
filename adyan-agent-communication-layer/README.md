@@ -1,4 +1,4 @@
-# Stockpile — Cross-Hospital Supply Negotiation Agents
+# Baymax — Cross-Hospital Supply Negotiation Agents
 
 ![tag:innovationlab](https://img.shields.io/badge/innovationlab-3D8BD3)
 ![tag:hackathon](https://img.shields.io/badge/hackathon-5F43F1)
@@ -25,9 +25,9 @@ Three Fetch.ai uAgents run the negotiation:
 
 | Agent | Facility | Role |
 | :-- | :-- | :-- |
-| `stockpile_front` | Hospital A | **Requester + ASI:One surface.** Carries the Chat Protocol; detects the shortfall, broadcasts the request, ranks offers, composes the transfer, settles it, narrates the result. |
-| `stockpile_hospital_b` | Hospital B | **Surplus facility.** Responds with constrained offers; accepts/rejects proposed transfer legs. |
-| `stockpile_hospital_c` | Hospital C | **Surplus facility.** Same. |
+| `baymax_front` | Hospital A | **Requester + ASI:One surface.** Carries the Chat Protocol; detects the shortfall, broadcasts the request, ranks offers, composes the transfer, settles it, narrates the result. |
+| `baymax_hospital_b` | Hospital B | **Surplus facility.** Responds with constrained offers; accepts/rejects proposed transfer legs. |
+| `baymax_hospital_c` | Hospital C | **Surplus facility.** Same. |
 
 **The chain (PRD §10):**
 
@@ -49,7 +49,7 @@ scripted hand-off.
 | `protocol.py` | **Frozen contract.** All message models (negotiation + re-exported Chat/Payment Protocol) and the negotiation state machine. | shared |
 | `interfaces.py` | The two stubbed seams with working mocks: `get_inventory` (Redis seam) and `rank_offers` (Claude seam). | shared |
 | `agent_base.py` | Shared building blocks: agent factory, facility registry, address derivation, the Chat Protocol shell. | shared |
-| `stockpile_agents.py` | The 3-agent negotiation core + local Bureau runner. | negotiation |
+| `baymax_agents.py` | The 3-agent negotiation core + local Bureau runner. | negotiation |
 | `front_agent.py` | ASI:One-facing FRONT agent: NL intent → negotiation, with chat narration + a Bureau self-test. | front |
 | `settlement.py` | Testnet FET Payment Protocol (seller role): `RequestPayment → CommitPayment → CompletePayment`. | pay |
 | `run_front.py` | Per-agent **Mailbox** runner for Hospital A: chat **+** payment protocols + the settlement bridge. | ship |
@@ -74,19 +74,19 @@ python -m venv .venv && source .venv/bin/activate     # Python 3.12+ (verified o
 pip install -r requirements.txt
 
 # Run the 3-agent negotiation in one process (Bureau). Self-exits when done.
-STOCKPILE_EXIT_WHEN_DONE=1 python stockpile_agents.py
+BAYMAX_EXIT_WHEN_DONE=1 python baymax_agents.py
 ```
 
-Pick the scenario with `STOCKPILE_ITEM`:
+Pick the scenario with `BAYMAX_ITEM`:
 
-| `STOCKPILE_ITEM` | Demonstrates |
+| `BAYMAX_ITEM` | Demonstrates |
 | :-- | :-- |
 | `"IV fluids"` (default) | **Split** across two facilities (150 + 50) |
 | `"saline"` | **Full cover** by a single facility |
 | `"sutures"` | **No offer** — graceful escalation to manual procurement |
 
 ```bash
-STOCKPILE_EXIT_WHEN_DONE=1 STOCKPILE_ITEM="saline" python stockpile_agents.py
+BAYMAX_EXIT_WHEN_DONE=1 BAYMAX_ITEM="saline" python baymax_agents.py
 ```
 
 ---
@@ -101,9 +101,9 @@ address, and runs.
 
 | Runner | Agent | Protocols carried |
 | :-- | :-- | :-- |
-| `run_front.py` | `stockpile_front` (Hospital A) | **Chat Protocol** + **Payment Protocol** (both `publish_manifest=True`) |
-| `run_hospital_b.py` | `stockpile_hospital_b` (Hospital B) | negotiation Models only |
-| `run_hospital_c.py` | `stockpile_hospital_c` (Hospital C) | negotiation Models only |
+| `run_front.py` | `baymax_front` (Hospital A) | **Chat Protocol** + **Payment Protocol** (both `publish_manifest=True`) |
+| `run_hospital_b.py` | `baymax_hospital_b` (Hospital B) | negotiation Models only |
+| `run_hospital_c.py` | `baymax_hospital_c` (Hospital C) | negotiation Models only |
 
 Run each in a **separate terminal** (order does not matter):
 
@@ -130,7 +130,7 @@ transfer triggers a real testnet `RequestPayment` in the same ASI:One conversati
 
 Once `run_front.py`'s Mailbox is connected:
 
-1. Go to **[ASI:One](https://asi1.ai)** and find the `stockpile_front` agent (by
+1. Go to **[ASI:One](https://asi1.ai)** and find the `baymax_front` agent (by
    its address, below).
 2. Send a natural-language intent, e.g.:
    - `Hospital A is short on IV fluids`  *(split across B + C)*
@@ -148,15 +148,15 @@ Once `run_front.py`'s Mailbox is connected:
 
 ### Settlement wiring (`run_front.py`)
 
-The negotiation core ends a successful deal at `stockpile_agents.settle_transfer()`.
+The negotiation core ends a successful deal at `baymax_agents.settle_transfer()`.
 `run_front.py` registers the real handler on the core via
-`stockpile_agents.register_settlement_hook(settlement.settle_via_payment_protocol)`,
+`baymax_agents.register_settlement_hook(settlement.settle_via_payment_protocol)`,
 so the instant a deal settles, `settle_transfer()` delegates to the Payment Protocol —
 sending a `RequestPayment` to the ASI:One chat user for the **final** settled plan
 (post re-plan). The user's `CommitPayment` is verified on-chain (in a worker thread)
 and answered with `CompletePayment` / `CancelPayment`. No polling, no double-fire.
-Per-transfer pricing is honored via `STOCKPILE_PAYMENT_PER_UNIT_FET` (falls back to the
-flat `STOCKPILE_PAYMENT_AMOUNT_FET`). The whole wired path (chat → negotiate → settle →
+Per-transfer pricing is honored via `BAYMAX_PAYMENT_PER_UNIT_FET` (falls back to the
+flat `BAYMAX_PAYMENT_AMOUNT_FET`). The whole wired path (chat → negotiate → settle →
 pay) is proven offline by `wave2_e2e_check.py`.
 
 ---
@@ -178,13 +178,13 @@ runners above print and that you use to find the agents on ASI:One / Agentverse.
 
 | Agent | Facility | Address | Agentverse profile |
 | :-- | :-- | :-- | :-- |
-| `stockpile_front` | Hospital A | `agent1qtmgxmgr6l8jzegay8wketwm576g58ndarpjzrvrd70jxtfg84wmujwcvau` | _fill after Mailbox connect_ |
-| `stockpile_hospital_b` | Hospital B | `agent1qf6xup6ayvegczq0nq829wcf8smvlxharjkj7fa67ezymq2ye4dcujrheke` | _fill after Mailbox connect_ |
-| `stockpile_hospital_c` | Hospital C | `agent1qd0jd7w0t6t5xzx5myupdajyk2z65zm9xsvrag2cn3909z6qmyg76kdwftt` | _fill after Mailbox connect_ |
+| `baymax_front` | Hospital A | `agent1qdc92r32emd3hchf6hw5jxl7m5axfuk8wpzrcym2kh5pp7fu7unx75ntp3n` | _fill after Mailbox connect_ |
+| `baymax_hospital_b` | Hospital B | `agent1qgc4vzduc8508y85gzafhg26fukaee94zjj99zp35ww2mdpkssky2dsq9t7` | _fill after Mailbox connect_ |
+| `baymax_hospital_c` | Hospital C | `agent1qv9f0ghp2djqmpqf0xxpzrymhrvjerxrza9d2afxut3uarh79afhj0v82yr` | _fill after Mailbox connect_ |
 
 > The Agentverse profile links are filled in by hand once each agent's one-time
 > Mailbox connect is done — see `DELIVERABLES.md` for the checklist. Addresses
-> shown are for the default dev seeds; set the `STOCKPILE_*_SEED` env vars for a
+> shown are for the default dev seeds; set the `BAYMAX_*_SEED` env vars for a
 > real deployment (the addresses will then change accordingly).
 
 Re-derive them at any time:

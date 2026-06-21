@@ -1,4 +1,4 @@
-# STOCKPILE — 60-second demo script
+# Baymax — 60-second demo script
 
 The whole demo happens **inside the ASI:One chat** — no custom frontend. The hero
 beat is the **split + settle**: no single hospital can cover the shortfall, so the
@@ -17,7 +17,7 @@ transaction, narrating every step back into the chat.
    ./.venv/bin/python run_front.py
    ```
 3. For each, open the printed **Agent Inspector** URL → **Connect → Mailbox → Finish**.
-4. In ASI:One, open a chat with `stockpile_front` (address in the README).
+4. In ASI:One, open a chat with `baymax_front` (address in the README).
 5. Confirm `PAYMENT_VERIFY_ONCHAIN=true` (real verification) and `FETCH_NETWORK=testnet`.
 
 ---
@@ -26,12 +26,12 @@ transaction, narrating every step back into the chat.
 
 | Time | On screen | Voiceover |
 | :-- | :-- | :-- |
-| **0:00–0:08** | Title: "Stockpile — hospitals that restock each other, autonomously." Cut to the ASI:One chat. | "Hospitals run lean on supplies. When one runs short, another nearby often has surplus — but reconciling it is slow and manual. Stockpile automates it." |
+| **0:00–0:08** | Title: "Baymax — hospitals that restock each other, autonomously." Cut to the ASI:One chat. | "Hospitals run lean on supplies. When one runs short, another nearby often has surplus — but reconciling it is slow and manual. Baymax automates it." |
 | **0:08–0:16** | Type into ASI:One: **`Hospital A is short on IV fluids`** and send. | "A supply manager just states the problem in plain language — to an agent live on ASI:One." |
 | **0:16–0:30** | Milestones stream into the chat: `shortfall_detected` (short 200) → `requesting` → offers from **B (150, near)** and **C (80, far, nearer expiry)`. | "The front agent broadcasts to the network. Two hospitals answer with real constraints — quantity, distance, expiry." |
 | **0:30–0:42** | `evaluating`: "no single facility covers 200" → **split: 150 from B + 50 from C** → `proposing` → both **accept**. | "No one hospital can cover it — so the agents compose a split across two facilities and re-plan on the fly. This is the real negotiation." |
 | **0:42–0:54** | `settling` → an **"Approve FET Payment"** action appears in the chat. Click it; wallet signs. | "The resolved transfer settles as a real on-chain transaction — the approval happens right here in the chat." |
-| **0:54–1:00** | `confirmed` with the transfer summary + the testnet **tx hash**. | "Detected, negotiated, split, and settled — autonomously. That's Stockpile." |
+| **0:54–1:00** | `confirmed` with the transfer summary + the testnet **tx hash**. | "Detected, negotiated, split, and settled — autonomously. That's Baymax." |
 
 ---
 

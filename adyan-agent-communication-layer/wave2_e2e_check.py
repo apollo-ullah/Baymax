@@ -25,8 +25,8 @@ import os
 # Offline test config: skip the on-chain query, let the BUYER drive process exit,
 # keep the offer window short. Must be set before importing the agent modules.
 os.environ["PAYMENT_VERIFY_ONCHAIN"] = "false"
-os.environ.pop("STOCKPILE_EXIT_WHEN_DONE", None)  # don't exit at CONFIRMED; pay first
-os.environ.setdefault("STOCKPILE_OFFER_TIMEOUT", "3.0")
+os.environ.pop("BAYMAX_EXIT_WHEN_DONE", None)  # don't exit at CONFIRMED; pay first
+os.environ.setdefault("BAYMAX_OFFER_TIMEOUT", "3.0")
 
 import agent_base  # noqa: F401,E402  (installs the Python 3.14 event loop first)
 
@@ -34,7 +34,7 @@ from uagents import Agent, Bureau, Context, Protocol  # noqa: E402
 
 import run_front  # noqa: E402  (real deployment construction path for FRONT)
 from agent_base import build_hospital_agent, create_text_chat, now  # noqa: E402
-from stockpile_agents import attach_hospital_handlers  # noqa: E402
+from baymax_agents import attach_hospital_handlers  # noqa: E402
 from protocol import (  # noqa: E402
     ChatMessage,
     ChatAcknowledgement,
@@ -47,7 +47,7 @@ from protocol import (  # noqa: E402
     CancelPayment,
 )
 
-INTENT = os.getenv("STOCKPILE_E2E_INTENT", "Hospital A is short on IV fluids")
+INTENT = os.getenv("BAYMAX_E2E_INTENT", "Hospital A is short on IV fluids")
 
 # --- FRONT (Hospital A): chat + payment(seller) + negotiation + settlement hook.
 #     run_front.build_agent() is the real deployment path: it registers the
@@ -61,7 +61,7 @@ attach_hospital_handlers(hospital_b, "Hospital B")
 attach_hospital_handlers(hospital_c, "Hospital C")
 
 # --- BUYER: stands in for the ASI:One user (chat sender + the payer wallet).
-buyer = Agent(name="asi_one_user", seed="stockpile-wave2-e2e-buyer-seed",
+buyer = Agent(name="asi_one_user", seed="baymax-wave2-e2e-buyer-seed",
               port=8200, network="testnet")
 
 _ticks = {"n": 0}

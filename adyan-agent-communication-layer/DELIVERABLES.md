@@ -1,4 +1,4 @@
-# STOCKPILE — Submission deliverables checklist
+# Baymax — Submission deliverables checklist
 
 Tracking the Fetch.ai **"From Intent to Action"** submission artifacts and the
 mandatory requirements. Code is complete and the full flow is **confirmed live on
@@ -15,15 +15,15 @@ demo video, repo URL) to paste in below.
       negotiation + settlement:
       `__FILL_ME__:  https://asi1.ai/chat/__________`
 - [ ] **Agentverse profile URLs** (one per agent, after each Mailbox connect):
-  - [ ] `stockpile_front` (Hospital A) —
+  - [ ] `baymax_front` (Hospital A) —
         `__FILL_ME__:  https://agentverse.ai/agents/details/__________`
-        (address `agent1qtmgxmgr6l8jzegay8wketwm576g58ndarpjzrvrd70jxtfg84wmujwcvau`)
-  - [ ] `stockpile_hospital_b` (Hospital B) —
+        (address `agent1qdc92r32emd3hchf6hw5jxl7m5axfuk8wpzrcym2kh5pp7fu7unx75ntp3n`)
+  - [ ] `baymax_hospital_b` (Hospital B) —
         `__FILL_ME__:  https://agentverse.ai/agents/details/__________`
-        (address `agent1qf6xup6ayvegczq0nq829wcf8smvlxharjkj7fa67ezymq2ye4dcujrheke`)
-  - [ ] `stockpile_hospital_c` (Hospital C) —
+        (address `agent1qgc4vzduc8508y85gzafhg26fukaee94zjj99zp35ww2mdpkssky2dsq9t7`)
+  - [ ] `baymax_hospital_c` (Hospital C) —
         `__FILL_ME__:  https://agentverse.ai/agents/details/__________`
-        (address `agent1qd0jd7w0t6t5xzx5myupdajyk2z65zm9xsvrag2cn3909z6qmyg76kdwftt`)
+        (address `agent1qv9f0ghp2djqmpqf0xxpzrymhrvjerxrza9d2afxut3uarh79afhj0v82yr`)
 - [ ] **Demo video** (≤ a few min: state an intent in ASI:One → watch the
       negotiation milestones stream → approve the FET payment → confirmed):
       `__FILL_ME__:  https://________`
@@ -34,9 +34,9 @@ demo video, repo URL) to paste in below.
 
 ## Mandatory requirements matrix (Fetch "From Intent to Action")
 
-| # | Requirement | How STOCKPILE meets it | Status |
+| # | Requirement | How Baymax meets it | Status |
 | :-- | :-- | :-- | :-- |
-| 1 | **Agent(s) built on Fetch.ai uAgents** | Three `uagents.Agent`s (Hospital A/B/C) built via `agent_base.build_hospital_agent`; full PRD §10 negotiation in `stockpile_agents.py`. | **Done** (verified: Bureau demo + 3-agent self-test run end to end) |
+| 1 | **Agent(s) built on Fetch.ai uAgents** | Three `uagents.Agent`s (Hospital A/B/C) built via `agent_base.build_hospital_agent`; full PRD §10 negotiation in `baymax_agents.py`. | **Done** (verified: Bureau demo + 3-agent self-test run end to end) |
 | 2 | **ASI:One Chat Protocol** (official, schema-matched) | Official `chat_protocol_spec` re-exported from `protocol.py` (never redefined); `agent_base.build_chat_protocol` acks + parses; FRONT includes it with `publish_manifest=True`. | **Done** (verified: chat → on_intent → narration loop runs; manifest publishes `AgentChatProtocol`) |
 | 3 | **Natural-language intent → action** | `front_agent.parse_intent` turns "Hospital A is short on IV fluids" into a structured request and calls `start_negotiation`; every milestone narrates back to the chat. LLM-parser seam ready behind the same signature. | **Done** (verified: intent parsed + negotiation kicked off in self-test) |
 | 4 | **Discoverable on Agentverse via Mailbox** | Each agent has its own runner (`run_front.py`, `run_hospital_b.py`, `run_hospital_c.py`) building it with `mailbox=True`, `publish_agent_details=True`, and a README path for the profile. | **Live** (FRONT confirmed: `Successfully registered as mailbox agent in Agentverse`, found + chatted on ASI:One; B & C reachable — both returned live offers during the run. Only the **profile-URL** placeholders above remain to paste.) |
@@ -64,7 +64,7 @@ ASI:One wallet are required). Run order does not matter for the three agents.
 2. **For each agent**: open its Inspector URL → **Connect → Mailbox → Finish**
    (one-time). Then open its **Agentverse profile** and paste the URL above
    (requirement #4).
-3. **On [ASI:One](https://asi1.ai)**: find `stockpile_front` by its address and
+3. **On [ASI:One](https://asi1.ai)**: find `baymax_front` by its address and
    send `Hospital A is short on IV fluids`. Watch the milestones stream back
    (requirements #2, #3).
 4. **Approve + sign** the FET `RequestPayment` in your ASI:One wallet to settle on
@@ -78,8 +78,8 @@ ASI:One wallet are required). Run order does not matter for the three agents.
 | Check | Command | Result |
 | :-- | :-- | :-- |
 | Addresses derive deterministically | `./.venv/bin/python -c "import agent_base; [print(f, agent_base.address_for(f)) for f in ('Hospital A','Hospital B','Hospital C')]"` | the three `agent1q…` addresses above |
-| Each runner constructs the right agent | `./.venv/bin/python -c "import run_front, run_hospital_b, run_hospital_c"` then call each `build_*()` | names `stockpile_front/_hospital_b/_hospital_c`, matching addresses |
+| Each runner constructs the right agent | `./.venv/bin/python -c "import run_front, run_hospital_b, run_hospital_c"` then call each `build_*()` | names `baymax_front/_hospital_b/_hospital_c`, matching addresses |
 | FRONT carries **both** protocols | inspect `run_front.build_agent()[0].protocols` | `AgentChatProtocol` + `AgentPaymentProtocol` |
 | Settlement seam fires on settle | (within `wave2_e2e_check.py`) `settle_transfer` → registered hook | `RequestPayment` sent to the chat user for the final plan (ref `pay-…`) |
 | Full wired path (chat→negotiate→settle→pay) | `./.venv/bin/python wave2_e2e_check.py` | `WAVE2 E2E SUCCESS` — exit 0, clean 3× in a row |
-| 3-agent negotiation end to end | `STOCKPILE_EXIT_WHEN_DONE=1 ./.venv/bin/python stockpile_agents.py` | `shortfall_detected → … → confirmed` (split 150 + 50) |
+| 3-agent negotiation end to end | `BAYMAX_EXIT_WHEN_DONE=1 ./.venv/bin/python baymax_agents.py` | `shortfall_detected → … → confirmed` (split 150 + 50) |

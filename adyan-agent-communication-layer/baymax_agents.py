@@ -1,4 +1,4 @@
-"""stockpile_agents.py — the canonical 3-agent supply negotiation.
+"""baymax_agents.py — the canonical 3-agent supply negotiation.
 
 This is the negotiation core all Wave 1 streams build on. It runs the full PRD
 §10 chain across three uAgents:
@@ -12,7 +12,7 @@ This is the negotiation core all Wave 1 streams build on. It runs the full PRD
 
 Run modes:
   * Bureau (this file's __main__): all three agents in one process for local
-    verification — `python stockpile_agents.py`. Importing this module has NO
+    verification — `python baymax_agents.py`. Importing this module has NO
     side effects: the Bureau, agents, and demo kickoff live inside
     run_bureau_demo(), guarded by `if __name__ == "__main__"`. FRONT and SHIP
     import the seams below WITHOUT triggering the demo.
@@ -32,15 +32,15 @@ Clean seams for the other streams (import these; they never trigger the demo):
   * B/C    -> rank_offers / get_inventory stay behind interfaces.py (B/C streams).
 
 Env knobs (demo runner / hardening — all optional):
-  * STOCKPILE_ITEM           item to simulate a shortfall of (default "IV fluids").
-  * STOCKPILE_NEED           override the requester's need quantity (drives the
+  * BAYMAX_ITEM           item to simulate a shortfall of (default "IV fluids").
+  * BAYMAX_NEED           override the requester's need quantity (drives the
                              partial/insufficient case when > total spare).
-  * STOCKPILE_FORCE_REJECT   facility name (e.g. "Hospital B") that will reject
+  * BAYMAX_FORCE_REJECT   facility name (e.g. "Hospital B") that will reject
                              the FIRST transfer leg it is proposed, to exercise
                              the leg-reject re-plan path.
-  * STOCKPILE_OFFER_TIMEOUT  seconds to wait for offers before evaluating (4.0).
-  * STOCKPILE_MAX_REPLANS    max bounded re-propose attempts on leg reject (3).
-  * STOCKPILE_EXIT_WHEN_DONE exit the process once a negotiation ends (1/true).
+  * BAYMAX_OFFER_TIMEOUT  seconds to wait for offers before evaluating (4.0).
+  * BAYMAX_MAX_REPLANS    max bounded re-propose attempts on leg reject (3).
+  * BAYMAX_EXIT_WHEN_DONE exit the process once a negotiation ends (1/true).
 """
 
 from __future__ import annotations
@@ -82,9 +82,9 @@ from protocol import (
 # Seconds to wait for offers before evaluating with whatever arrived.
 # Bureau/local: 4s is fine. Mailbox (separate processes): use 30s+ — Agentverse
 # round-trips are much slower than in-process Bureau messaging.
-OFFER_TIMEOUT_S = float(os.getenv("STOCKPILE_OFFER_TIMEOUT", "4.0"))
+OFFER_TIMEOUT_S = float(os.getenv("BAYMAX_OFFER_TIMEOUT", "4.0"))
 # When set, only narrate key milestones back to ASI:One (avoids 429 rate limits).
-SPARSE_NARRATION = os.getenv("STOCKPILE_SPARSE_NARRATION", "").lower() in ("1", "true", "yes")
+SPARSE_NARRATION = os.getenv("BAYMAX_SPARSE_NARRATION", "").lower() in ("1", "true", "yes")
 _NARRATE_STATES = frozenset({
     NegotiationState.SHORTFALL_DETECTED,
     NegotiationState.EVALUATING,
@@ -96,9 +96,9 @@ _NARRATE_STATES = frozenset({
 })
 # Bounded re-plan: how many times we try to re-home a dropped (rejected) leg
 # before giving up and settling what was accepted. Prevents infinite re-propose.
-MAX_REPLAN_ATTEMPTS = int(os.getenv("STOCKPILE_MAX_REPLANS", "3"))
+MAX_REPLAN_ATTEMPTS = int(os.getenv("BAYMAX_MAX_REPLANS", "3"))
 # For the one-shot Bureau demo/test: exit the process once a negotiation ends.
-EXIT_WHEN_DONE = os.getenv("STOCKPILE_EXIT_WHEN_DONE", "").lower() in ("1", "true", "yes")
+EXIT_WHEN_DONE = os.getenv("BAYMAX_EXIT_WHEN_DONE", "").lower() in ("1", "true", "yes")
 
 # In-process negotiation state, keyed by request_id. (Bureau runs one process;
 # a multi-process deployment would move this into ctx.storage / Redis.)
@@ -597,12 +597,12 @@ def attach_front_handlers(front):
 def attach_hospital_handlers(agent, facility: str):
     """Wire a surplus facility's negotiation handlers.
 
-    STOCKPILE_FORCE_REJECT=<facility> makes that facility reject the FIRST
+    BAYMAX_FORCE_REJECT=<facility> makes that facility reject the FIRST
     transfer leg it is asked to fulfil (regardless of stock), to exercise the
     leg-reject re-plan path. It still makes a normal offer first, so the
     requester proposes to it and then sees the rejection."""
 
-    force_reject = os.getenv("STOCKPILE_FORCE_REJECT", "").strip()
+    force_reject = os.getenv("BAYMAX_FORCE_REJECT", "").strip()
     # Per-facility one-shot flag so the forced reject fires only once.
     _forced = {"done": False}
 
@@ -632,7 +632,7 @@ def attach_hospital_handlers(agent, facility: str):
         if force_reject == facility and not _forced["done"]:
             _forced["done"] = True
             ctx.logger.info(f"[{facility}] FORCING reject of leg {msg.proposal_id} "
-                            f"(STOCKPILE_FORCE_REJECT).")
+                            f"(BAYMAX_FORCE_REJECT).")
             await ctx.send(sender, TransferReject(
                 request_id=msg.request_id, proposal_id=msg.proposal_id,
                 rejected_by=facility, reason="forced reject (demo)"))
@@ -654,14 +654,14 @@ def attach_hospital_handlers(agent, facility: str):
 
 def _maybe_exit(ctx: Context):
     if EXIT_WHEN_DONE:
-        ctx.logger.info("STOCKPILE_EXIT_WHEN_DONE set — shutting down after the demo run.")
+        ctx.logger.info("BAYMAX_EXIT_WHEN_DONE set — shutting down after the demo run.")
         os._exit(0)
 
 
 # ---------------------------------------------------------------------------
 # Bureau demo: run all three agents in one process for local verification.
 # Everything that constructs agents / a Bureau / kicks off a demo lives in here
-# so that `import stockpile_agents` has NO side effects (Task 1).
+# so that `import baymax_agents` has NO side effects (Task 1).
 # ---------------------------------------------------------------------------
 
 def run_bureau_demo():
@@ -669,8 +669,8 @@ def run_bureau_demo():
     startup, and run. Invoked only from `if __name__ == "__main__"`.
 
     Scenario is chosen by env:
-      STOCKPILE_ITEM   — saline (full-cover), IV fluids (split), sutures (no-offer)
-      STOCKPILE_NEED   — override the need to force the partial/insufficient case
+      BAYMAX_ITEM   — saline (full-cover), IV fluids (split), sutures (no-offer)
+      BAYMAX_NEED   — override the need to force the partial/insufficient case
     """
     front = build_hospital_agent("Hospital A")
     hospital_b = build_hospital_agent("Hospital B")
@@ -684,10 +684,10 @@ def run_bureau_demo():
     async def _kickoff(ctx: Context):
         """Bureau demo trigger. FRONT replaces this entry point with a chat
         handler that calls start_negotiation() on an ASI:One intent."""
-        item = os.getenv("STOCKPILE_ITEM", "IV fluids")
-        need_override = os.getenv("STOCKPILE_NEED")
+        item = os.getenv("BAYMAX_ITEM", "IV fluids")
+        need_override = os.getenv("BAYMAX_NEED")
         quantity_needed = int(need_override) if need_override else None
-        msg = f"=== Stockpile demo: simulating a shortfall of {item} at {REQUESTER}"
+        msg = f"=== Baymax demo: simulating a shortfall of {item} at {REQUESTER}"
         if quantity_needed is not None:
             msg += f" (need override = {quantity_needed})"
         ctx.logger.info(msg + " ===")

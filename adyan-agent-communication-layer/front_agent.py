@@ -1,4 +1,4 @@
-"""front_agent.py — STOCKPILE's ASI:One-facing entrypoint (Hospital A / FRONT).
+"""front_agent.py — Baymax's ASI:One-facing entrypoint (Hospital A / FRONT).
 
 This is the standalone runnable agent that turns a natural-language chat intent
 from ASI:One into a full inter-facility supply negotiation and streams every
@@ -8,7 +8,7 @@ Wiring (all of it imported from the frozen Wave 0 contract — nothing redefined
   * agent_base.build_hospital_agent("Hospital A", mailbox=True)
         the requester agent, reachable through Agentverse/ASI:One via a Mailbox
         (no public inbound endpoint needed). network is pinned to testnet.
-  * stockpile_agents.attach_front_handlers(front)
+  * baymax_agents.attach_front_handlers(front)
         the negotiation message handlers (SupplyOffer / TransferAccept /
         TransferReject + the offer-timeout tick) that orchestrate the deal.
   * agent_base.build_chat_protocol(on_intent)
@@ -25,12 +25,12 @@ The flow:
 
 No API key is required: parse_intent() is a deterministic keyword/regex parser.
 A clearly-marked seam (parse_intent_llm) shows how an ASI:One LLM parser would
-drop in behind the SAME signature when STOCKPILE_ASI1_API_KEY is set.
+drop in behind the SAME signature when BAYMAX_ASI1_API_KEY is set.
 
 Run modes:
   * Live ASI:One:   `python front_agent.py`   (Mailbox; see __main__ banner /
                     the manual steps at the bottom of this file).
-  * Local self-test: `STOCKPILE_SELFTEST=1 python front_agent.py`
+  * Local self-test: `BAYMAX_SELFTEST=1 python front_agent.py`
                     builds a 3-agent Bureau (A + surplus B + surplus C),
                     feeds a synthetic ChatMessage through the chat handler, and
                     confirms the negotiation completes + narrates — no Agentverse,
@@ -45,7 +45,7 @@ import time
 from typing import Optional
 
 # Import agent_base FIRST so the Python-3.14 event-loop workaround is installed
-# before ANY Agent is constructed. (stockpile_agents also imports it, but we name
+# before ANY Agent is constructed. (baymax_agents also imports it, but we name
 # it explicitly here to make the ordering contract obvious.)
 from agent_base import (
     REQUESTER,
@@ -55,7 +55,7 @@ from agent_base import (
 )
 from uagents import Context
 
-from stockpile_agents import (
+from baymax_agents import (
     NEGOTIATIONS,
     attach_front_handlers,
     start_negotiation,
@@ -161,11 +161,11 @@ def _looks_like_echo_chatter(text: str) -> bool:
 # Per-sender cooldown. After a real intent kicks off a negotiation, the ASI:One
 # LLM echoes it back many times within seconds; ignore further "requests" from the
 # same sender for this window so the echo storm cannot spawn duplicate deals.
-_INTENT_COOLDOWN_S = float(os.getenv("STOCKPILE_INTENT_COOLDOWN", "20"))
+_INTENT_COOLDOWN_S = float(os.getenv("BAYMAX_INTENT_COOLDOWN", "20"))
 _LAST_ACCEPTED_INTENT: dict[str, float] = {}
 
 _CAPABILITIES = (
-    "STOCKPILE — autonomous hospital supply negotiation.\n\n"
+    "Baymax — autonomous hospital supply negotiation.\n\n"
     "Tell me which facility is short on what, and I'll broadcast the need to the "
     "network, rank the offers, and settle a (possibly split) inter-facility "
     "transfer — narrating each step back to you.\n\n"
@@ -320,7 +320,7 @@ def parse_intent(text: str) -> dict:
 # SEAM — OPTIONAL ASI:One LLM intent parser (drop-in, same signature).
 #
 # No API key is available in this environment, so this is intentionally NOT
-# wired on by default. When STOCKPILE_ASI1_API_KEY is set, _resolve_parser()
+# wired on by default. When BAYMAX_ASI1_API_KEY is set, _resolve_parser()
 # would prefer this LLM parser; otherwise it returns the deterministic
 # parse_intent() above. The LLM call below is illustrative (commented) — it uses
 # the OpenAI-compatible ASI:One endpoint and must return the SAME dict shape as
@@ -331,7 +331,7 @@ def parse_intent(text: str) -> dict:
 #   def parse_intent_llm(text: str) -> dict:
 #       client = OpenAI(
 #           base_url="https://api.asi1.ai/v1",
-#           api_key=os.environ["STOCKPILE_ASI1_API_KEY"],
+#           api_key=os.environ["BAYMAX_ASI1_API_KEY"],
 #       )
 #       resp = client.chat.completions.create(
 #           model="asi1",
@@ -363,12 +363,12 @@ def parse_intent(text: str) -> dict:
 def _resolve_parser():
     """Pick the active intent parser.
 
-    Returns the ASI:One LLM parser when STOCKPILE_ASI1_API_KEY is set AND the
+    Returns the ASI:One LLM parser when BAYMAX_ASI1_API_KEY is set AND the
     optional `openai` client is importable; otherwise the deterministic
     keyword/regex parse_intent(). Both share the exact same signature
     (str -> dict), so on_intent() never changes.
     """
-    if os.getenv("STOCKPILE_ASI1_API_KEY"):
+    if os.getenv("BAYMAX_ASI1_API_KEY"):
         try:
             from openai import OpenAI  # noqa: F401  (presence check only)
             # return parse_intent_llm   # ← enable once the seam above is uncommented
@@ -463,7 +463,7 @@ def build_front_agent():
     negotiation handlers and the ASI:One Chat Protocol attached.
 
     Mailbox=True makes it reachable through Agentverse/ASI:One without a public
-    inbound endpoint. We do NOT reuse stockpile_agents' demo agent and we do NOT
+    inbound endpoint. We do NOT reuse baymax_agents' demo agent and we do NOT
     kick off a negotiation on startup — the negotiation is driven purely by chat.
     """
     front = build_hospital_agent("Hospital A", mailbox=True)
@@ -479,7 +479,7 @@ def build_front_agent():
 # ASI:One, Agentverse, or any network. Builds a 3-agent Bureau (FRONT + two
 # surplus facilities), feeds a synthetic ChatMessage through the chat handler,
 # and captures the narrated ChatMessages the FRONT would have streamed to a
-# real chat sender. Run with:  STOCKPILE_SELFTEST=1 python front_agent.py
+# real chat sender. Run with:  BAYMAX_SELFTEST=1 python front_agent.py
 # ---------------------------------------------------------------------------
 
 def run_selftest():
@@ -496,15 +496,15 @@ def run_selftest():
     On startup, FRONT feeds a synthetic intent through the SAME on_intent() the
     live agent uses, so the whole chat -> parse -> negotiate -> narrate loop is
     exercised. The process self-exits at the terminal milestone
-    (STOCKPILE_EXIT_WHEN_DONE).
+    (BAYMAX_EXIT_WHEN_DONE).
     """
     from uagents import Agent, Bureau
     from agent_base import FET_NETWORK
-    from stockpile_agents import attach_hospital_handlers
+    from baymax_agents import attach_hospital_handlers
 
     # Self-terminate once the negotiation reaches a terminal (CONFIRMED/FAILED).
-    os.environ.setdefault("STOCKPILE_EXIT_WHEN_DONE", "1")
-    intent_text = os.getenv("STOCKPILE_SELFTEST_INTENT",
+    os.environ.setdefault("BAYMAX_EXIT_WHEN_DONE", "1")
+    intent_text = os.getenv("BAYMAX_SELFTEST_INTENT",
                             "Hospital A is short on IV fluids")
 
     # --- The three negotiation agents (Bureau / in-process mode, NOT mailbox) -
@@ -521,8 +521,8 @@ def run_selftest():
 
     # --- The collector: stands in for the ASI:One chat user -------------------
     collector = Agent(
-        name="stockpile_selftest_collector",
-        seed="stockpile-selftest-collector-seed",
+        name="baymax_selftest_collector",
+        seed="baymax-selftest-collector-seed",
         port=8009,
         network=FET_NETWORK,
     )
@@ -557,12 +557,12 @@ def run_selftest():
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    if os.getenv("STOCKPILE_SELFTEST", "").lower() in ("1", "true", "yes"):
+    if os.getenv("BAYMAX_SELFTEST", "").lower() in ("1", "true", "yes"):
         run_selftest()
     else:
         agent = build_front_agent()
         print("=" * 70)
-        print("STOCKPILE FRONT agent (Hospital A) — ASI:One entrypoint")
+        print("Baymax FRONT agent (Hospital A) — ASI:One entrypoint")
         print(f"  address : {agent.address}")
         print(f"  network : {os.getenv('FETCH_NETWORK', 'testnet')} (TESTNET ONLY)")
         print("-" * 70)
