@@ -65,7 +65,13 @@ def browserbase_order(item: str, quantity: int, *, hospital: str) -> SupplierOrd
     )
     sh.init()
     try:
+        _timeout_ms = int(os.getenv("BAYMAX_ORDER_TIMEOUT_S", "90")) * 1000
         page = sh.page
+        try:
+            page.set_default_timeout(_timeout_ms)
+            page.set_default_navigation_timeout(_timeout_ms)
+        except Exception:
+            pass  # best-effort; not all Stagehand page wrappers expose these
         live_view_url = getattr(getattr(sh, "session", None), "live_view_url", None)
         page.goto(url)
         page.act(f"search for '{quantity} units of {item}' and add the first result to the cart")

@@ -254,6 +254,20 @@ async def _request_admin_decision(ctx: Context, req_id: str):
     """Halt the negotiation and ask the chat admin to decide: approve the trade,
     order externally, or reject. Arms the approval watchdog (see offer_timeout)."""
     neg = NEGOTIATIONS[req_id]
+    # Headless/Bureau demo: no chat admin can reply (reply_to is None) — auto-resolve
+    # so the documented `python baymax_agents.py` demo still completes instead of
+    # stalling at the gate until the watchdog fails it.
+    if neg.get("reply_to") is None:
+        plan = neg.get("plan")
+        if plan and plan.allocations:
+            await _begin_trade(ctx, req_id)
+        else:
+            await _step(ctx, neg, NegotiationState.FAILED,
+                        f"No facility can spare {neg['item']}. Shortfall of {neg['need']} "
+                        f"unresolved — escalate to manual procurement.", narrate=True, final=True)
+            neg["done"] = True
+            _maybe_exit(ctx)
+        return
     neg["approval_deadline"] = time.monotonic() + APPROVAL_TIMEOUT_S
     neg["decided"] = False
     plan = neg.get("plan")
@@ -338,8 +352,10 @@ async def _order_path(ctx: Context, req_id: str):
                 narrate=True)
     try:
         # SYNC seam off the event loop (Browserbase/Playwright or mock).
-        order = await asyncio.to_thread(
-            order_from_supplier, neg["item"], neg["need"], hospital=neg["requester"],
+        _order_budget = float(os.getenv("BAYMAX_ORDER_TIMEOUT_S", "90")) + 10
+        order = await asyncio.wait_for(
+            asyncio.to_thread(order_from_supplier, neg["item"], neg["need"], hospital=neg["requester"]),
+            timeout=_order_budget,
         )
     except Exception as exc:  # noqa: BLE001 — never crash the handler
         await _step(ctx, neg, NegotiationState.FAILED,

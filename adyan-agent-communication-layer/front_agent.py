@@ -350,7 +350,7 @@ def parse_intent(text: str) -> dict:
     # Explicit external-order intent ("order 500 saline") — proactive restock,
     # reachable even with no shortfall. Checked before the request-cue gate
     # because "order" is not a shortfall cue.
-    if _ORDER_CUE_RE.search(text):
+    if _ORDER_CUE_RE.search(text) and not _REQUEST_CUE_RE.search(text):
         requester = _match_facility(text) or REQUESTER
         item_aliases = tuple(syn for syn, canon in _ITEM_SYNONYMS.items() if canon == item)
         return {
@@ -464,14 +464,24 @@ async def on_intent(ctx: Context, sender: str, text: str) -> None:
     pending_req_id = find_awaiting_approval(sender)
     if pending_req_id is not None:
         # Ignore our own narration echoed back by ASI:One while we wait.
+        # Use ONLY length/newline checks here — genuine echoes are long/multi-line;
+        # a deliberate short admin reply (e.g. "order from supplier") must not be
+        # dropped by _CHATTER_RE which matches "suppliers?".
         if (_MILESTONE_ECHO_RE.match(text) or _ASI1_META_RE.search(text)
-                or _looks_like_echo_chatter(text)):
+                or len(text) > 240 or text.count("\n") >= 2):
             ctx.logger.debug(f"awaiting-approval: ignoring echo from {sender}")
             return
         decision = parse_decision(text)
         ctx.logger.info(f"admin decision from {sender}: {text!r} -> {decision}")
         if decision == "unclear":
-            await ctx.send(sender, create_text_chat(_DECISION_HELP, end_session=False))
+            peek = _PARSER(text)
+            if peek.get("kind") in ("request", "order"):
+                pending_item = NEGOTIATIONS.get(pending_req_id, {}).get("item", "the pending request")
+                msg = (f"You have a pending decision for **{pending_item}**. Please resolve it "
+                       f"first (reply `approve`, `order`, or `reject`) before starting a new request.")
+            else:
+                msg = _DECISION_HELP
+            await ctx.send(sender, create_text_chat(msg, end_session=False))
             return
         await resume_after_admin_decision(ctx, pending_req_id, decision)
         return

@@ -6,6 +6,8 @@ assert parse_decision("order instead") == "order"
 assert parse_decision("let's buy it externally") == "order"
 assert parse_decision("no, reject this") == "reject"
 assert parse_decision("cancel") == "reject"
+assert parse_decision("ok") == "approve", parse_decision("ok")
+assert parse_decision("okay") == "approve", parse_decision("okay")
 # Ambiguous (echo of the prompt names all three) -> unclear, never a wrong action.
 assert parse_decision("reply approve to trade or order or reject") == "unclear"
 

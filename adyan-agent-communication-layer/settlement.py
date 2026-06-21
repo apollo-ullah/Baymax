@@ -300,25 +300,28 @@ async def verify_payment_onchain_with_retry(
     return last
 
 
-def _resolve_pending_key(reference: Optional[str]) -> str:
+def _resolve_pending_key(reference: Optional[str], sender: Optional[str] = None) -> str:
     """Map a CommitPayment.reference back to our stored _PAYMENT_PENDING key.
 
     ASI:One does not always echo the exact RequestPayment.reference back in the
     CommitPayment (it may be empty or rewritten). When the reference does not
-    match but there is exactly ONE payment in flight, fall back to it — otherwise
-    the payment_confirmed / terminal CONFIRMED narration (which is keyed on this
-    reference) would be silently skipped even though the payment succeeded.
+    match but there is exactly ONE payment in flight, fall back to it — but only
+    when the sender matches the stored buyer (prevents cross-user mis-routing).
     """
     key = reference or ""
     if key in _PAYMENT_PENDING:
         return key
     if len(_PAYMENT_PENDING) == 1:
-        return next(iter(_PAYMENT_PENDING))
+        lone_key = next(iter(_PAYMENT_PENDING))
+        entry = _PAYMENT_PENDING[lone_key]
+        if sender is None or entry.get("buyer") == sender:
+            return lone_key
     return key
 
 
-async def _narrate_payment(ctx: Context, reference: Optional[str], text: str) -> None:
-    pending = _PAYMENT_PENDING.get(_resolve_pending_key(reference))
+async def _narrate_payment(ctx: Context, reference: Optional[str], text: str,
+                           sender: Optional[str] = None) -> None:
+    pending = _PAYMENT_PENDING.get(_resolve_pending_key(reference, sender))
     reply_to = pending.get("reply_to") if pending else None
     if reply_to:
         await ctx.send(reply_to, create_text_chat(text, end_session=False))
@@ -326,8 +329,9 @@ async def _narrate_payment(ctx: Context, reference: Optional[str], text: str) ->
 
 async def _finalize_from_payment(
     ctx: Context, reference: Optional[str], tx_id: str | None,
+    sender: Optional[str] = None,
 ) -> None:
-    key = _resolve_pending_key(reference)
+    key = _resolve_pending_key(reference, sender)
     pending = _PAYMENT_PENDING.pop(key, None)
     if not pending:
         return
@@ -341,8 +345,9 @@ async def _finalize_from_payment(
         await finalize_after_payment(ctx, pending["req_id"], key, tx_id=tx_id)
 
 
-async def _fail_from_payment(ctx: Context, reference: Optional[str], reason: str) -> None:
-    key = _resolve_pending_key(reference)
+async def _fail_from_payment(ctx: Context, reference: Optional[str], reason: str,
+                              sender: Optional[str] = None) -> None:
+    key = _resolve_pending_key(reference, sender)
     pending = _PAYMENT_PENDING.pop(key, None)
     if not pending:
         return
@@ -416,8 +421,8 @@ def build_payment_protocol() -> Protocol:
                 f"-> sending CompletePayment."
             )
             await ctx.send(sender, CompletePayment(transaction_id=msg.transaction_id))
-            await _narrate_payment(ctx, msg.reference, chat)
-            await _finalize_from_payment(ctx, msg.reference, msg.transaction_id)
+            await _narrate_payment(ctx, msg.reference, chat, sender=sender)
+            await _finalize_from_payment(ctx, msg.reference, msg.transaction_id, sender=sender)
         else:
             reason = (
                 "on-chain tx not found or unsuccessful"
@@ -436,8 +441,9 @@ def build_payment_protocol() -> Protocol:
                 ctx,
                 msg.reference,
                 f"**payment_failed** — {reason} (tx `{msg.transaction_id}`).",
+                sender=sender,
             )
-            await _fail_from_payment(ctx, msg.reference, reason)
+            await _fail_from_payment(ctx, msg.reference, reason, sender=sender)
 
     @proto.on_message(RejectPayment)
     async def on_reject(ctx: Context, sender: str, msg: RejectPayment):
@@ -603,7 +609,7 @@ async def settle_via_payment_protocol(
     )
     chat = reply_to or user_address
     if chat:
-        _PAYMENT_PENDING[reference] = {"reply_to": chat, "req_id": req_id}
+        _PAYMENT_PENDING[reference] = {"reply_to": chat, "req_id": req_id, "buyer": user_address}
     ctx.logger.info(
         f"[payment] settle_via_payment_protocol: requested {amount} "
         f"FET for {req_id} from {user_address}; reference={reference}. "
@@ -653,7 +659,7 @@ async def settle_order_via_payment_protocol(
     chat = reply_to or user_address
     if chat:
         _PAYMENT_PENDING[reference] = {
-            "reply_to": chat, "req_id": req_id, "kind": "order",
+            "reply_to": chat, "req_id": req_id, "kind": "order", "buyer": user_address,
         }
     ctx.logger.info(
         f"[payment] settle_order_via_payment_protocol: requested {amount} FET for "

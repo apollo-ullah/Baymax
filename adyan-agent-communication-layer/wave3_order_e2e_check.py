@@ -21,6 +21,7 @@ os.environ["PAYMENT_VERIFY_ONCHAIN"] = "false"     # no live RPC in the sandbox
 os.environ["BAYMAX_REDIS"] = "0"                    # deterministic mock inventory
 os.environ["BAYMAX_SPARSE_NARRATION"] = "0"        # see AWAITING_APPROVAL narration
 os.environ.pop("BAYMAX_EXIT_WHEN_DONE", None)      # buyer drives exit (pay first)
+os.environ.pop("BAYMAX_BROWSERBASE", None)         # force mock path; this harness is offline
 os.environ.setdefault("BAYMAX_OFFER_TIMEOUT", "3.0")
 os.environ.setdefault("BAYMAX_APPROVAL_TIMEOUT", "60")
 

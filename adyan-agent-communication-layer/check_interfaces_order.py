@@ -1,4 +1,4 @@
-"""Throwaway check for the Wave-3 interfaces seams (mock path)."""
+"""Offline verification of Wave-3 interfaces seams (mock path): order_from_supplier + approve_release."""
 import os
 os.environ.pop("BAYMAX_BROWSERBASE", None)  # force the mock path
 
