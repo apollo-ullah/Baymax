@@ -7,7 +7,9 @@ end to end. On-chain verification is stubbed (PAYMENT_VERIFY_ONCHAIN=false) sinc
 the sandbox has no ASI:One wallet or live testnet RPC.
 
     buyer  --ChatMessage("Hospital A is short on IV fluids")-->  FRONT
-    FRONT  : negotiate with B + C  ->  split 150 + 50  ->  CONFIRMED
+    FRONT  : negotiate with B + C  ->  split 150 + 50  ->  AWAITING_APPROVAL
+    buyer  --ChatMessage("approve")----------------------------> FRONT
+    FRONT  : approve -> proposing -> settling -> CONFIRMED
     FRONT.settle_transfer  --(hook)-->  settlement.settle_via_payment_protocol
     FRONT  --RequestPayment----------->  buyer
     buyer  --CommitPayment(tx)-------->  FRONT

@@ -27,6 +27,7 @@ There is **no test runner, linter, or build step.** The verification harnesses b
 | Payment-protocol handshake in isolation (2 agents, fake tx) | `PAYMENT_VERIFY_ONCHAIN=false ./.venv/bin/python two_agent_payment_spike.py` |
 | Re-derive agent addresses from seeds | `./.venv/bin/python -c "import agent_base; print(*(f'{f}: {agent_base.address_for(f)}' for f in ('Hospital A','Hospital B','Hospital C')), sep=chr(10))"` |
 | Negotiation against **live Redis** inventory (split sourced from `tracks/redis`) | `BAYMAX_REDIS=1 BAYMAX_ITEM="IV fluids" BAYMAX_NEED=200 BAYMAX_EXIT_WHEN_DONE=1 ./.venv/bin/python baymax_agents.py` |
+| Offline admin-gate + external-order E2E (chat→negotiate→admin orders→supplier→settle) | `./.venv/bin/python wave3_order_e2e_check.py` |
 
 **Live Redis bring-up** (needed once before the Redis-backed row above; `redis` + `python-dotenv` must be in `.venv`):
 
@@ -76,6 +77,8 @@ Two layers deliberately sit behind **stubbed seams** in `interfaces.py`, owned b
 
 The settlement step is also a seam: `baymax_agents.settle_transfer()` delegates to a hook registered via `register_settlement_hook(...)`. The core **never imports the settlement layer** — it's a one-way dependency wired at deployment time (`run_front.py` registers `settlement.settle_via_payment_protocol`). With no hook (local Bureau demo), `settle_transfer` returns a stub reference so the chain still completes.
 
+**Wave 3 — admin approval gate + external supplier order.** After evaluation the negotiation halts at `AWAITING_APPROVAL` instead of auto-proposing. A chat reply (`approve` / `order` / `reject`) resumes via `resume_after_admin_decision`. The `approve` branch proposes and settles the inter-facility trade as before. The `order` branch calls the `order_from_supplier` seam (`interfaces.py`) — which delegates to `supplier_order.py` when `BAYMAX_BROWSERBASE=1` (Stagehand/Playwright over Browserbase), falling back to a deterministic mock — and settles to `BAYMAX_SUPPLIER_WALLET` (or the FRONT wallet, narrated as symbolic). The `reject` branch cancels and narrates. B/C release of each transfer leg is gated by the `approve_release` seam in `interfaces.py`, controlled by `BAYMAX_REQUIRE_FACILITY_APPROVAL`. A proactive `order N <item>` chat intent (no shortfall required) routes via `kind:"order"` → `start_order` in `front_agent.py`, bypassing the shortfall guard entirely.
+
 ### Run modes
 
 - **Bureau (one process):** `baymax_agents.py`'s `__main__` and the various self-tests build all agents in a single `Bureau`. In-process negotiation state lives in the module-global `NEGOTIATIONS` dict (a real multi-process deploy would move this to `ctx.storage`/Redis). Importing `baymax_agents` has **no side effects** — agent/Bureau construction is guarded under `if __name__ == "__main__"`.
@@ -114,6 +117,13 @@ These are easy to get wrong and have all bitten this codebase before:
 | `REDIS_URL` | Redis endpoint for `BAYMAX_REDIS` mode (default `redis://localhost:6379`). `BAYMAX_REDIS_TIMEOUT` bounds the socket (default 2s). |
 | `PAYMENT_VERIFY_ONCHAIN` | `false` skips the cosmpy tx query and trusts the commit — **dev/spike only**, no real settlement guarantee |
 | `BAYMAX_PAYMENT_AMOUNT_FET` / `BAYMAX_PAYMENT_PER_UNIT_FET` | Flat vs per-unit FET pricing per settlement |
+| `BAYMAX_BROWSERBASE` | `1`/`true` → `order_from_supplier` drives a vendor site via Stagehand/Playwright over Browserbase (`supplier_order.py`); unset = deterministic mock. Fail-closed to mock. |
+| `BAYMAX_SUPPLIER_URL` | Vendor site to drive in Browserbase mode. |
+| `BAYMAX_SUPPLIER_WALLET` | `fetch1…` payee for external-order FET settlement; unset → FRONT wallet, narrated as symbolic. |
+| `BAYMAX_APPROVAL_TIMEOUT` | Seconds to wait for the admin's approve/order/reject decision before the watchdog auto-fails (default 300). |
+| `BAYMAX_REQUIRE_FACILITY_APPROVAL` | Reserved per-facility (B/C) admin gate; default off (auto-approve + notify). When on, currently denies (fail-closed until a real channel exists). |
+| `BAYMAX_DEFAULT_ORDER_QTY` | Default quantity for a proactive order when none is stated and there's no shortfall (default 100). |
+| `BROWSERBASE_API_KEY` / `BROWSERBASE_PROJECT_ID` / `MODEL_API_KEY` | Browserbase/Stagehand credentials (only for `BAYMAX_BROWSERBASE=1`). |
 | `BAYMAX_*_SEED`, `FETCH_NETWORK` | Agent seeds (loaded from `.env`); network guardrail (testnet only) |
 
 Secrets (`.env`, `private_keys.json`) and `.venv/` are gitignored. `DELIVERABLES.md` tracks submission status and the manual, browser-gated Mailbox-connect checklist; the live ASI:One signed-payment leg is the one path not verifiable offline.

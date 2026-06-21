@@ -193,12 +193,42 @@ Re-derive them at any time:
 ./.venv/bin/python -c "import agent_base; print(*(f'{f}: {agent_base.address_for(f)}' for f in ('Hospital A','Hospital B','Hospital C')), sep=chr(10))"
 ```
 
+## Admin approval + external order (Wave 3)
+
+After evaluation, the negotiation halts at `AWAITING_APPROVAL` and prompts the
+admin in chat. The admin replies with one of three decisions:
+
+- **`approve`** — authorize the inter-facility trade; the normal propose→settle→pay
+  flow continues.
+- **`order N <item>`** (or plain **`order`**) — purchase directly from an external
+  supplier. The `order_from_supplier` seam drives a vendor site via
+  Stagehand/Playwright over Browserbase when `BAYMAX_BROWSERBASE=1`, falling back
+  to a deterministic mock. Settlement goes to `BAYMAX_SUPPLIER_WALLET` (or the FRONT
+  wallet, narrated as symbolic).
+- **`reject`** — cancel the negotiation entirely.
+
+A **proactive** `order N <item>` intent (e.g. `order 200 IV fluids`) can also be
+sent directly into the chat without a prior shortfall — `front_agent.py` routes it
+straight to the order path via `start_order`, bypassing the shortfall guard.
+
+The full Wave 3 flow (chat→negotiate→admin orders→supplier→settle) is proven
+offline by `wave3_order_e2e_check.py` (no Browserbase credentials needed; the mock
+path is exercised). The live Browserbase order leg (like the live signed-payment
+leg) is the one path not verifiable offline.
+
+```bash
+./.venv/bin/python wave3_order_e2e_check.py
+```
+
+---
+
 ## Status
 
 Wave 0 (frozen contract) + the 3-agent negotiation, the ASI:One FRONT agent
 (`front_agent.py`), the testnet Payment Protocol (`settlement.py`), and the
-per-agent Mailbox runners (`run_*.py`, SHIP) are all in place. Remaining work is
-the **manual, browser-gated** Agentverse Mailbox connect for each agent + the live
-ASI:One demo (tracked in `DELIVERABLES.md`). The Wave-2 direct settlement seam is
-wired and verified end to end (`wave2_e2e_check.py`, clean 3×). See `DELIVERABLES.md`
-for the submission checklist + requirement matrix.
+per-agent Mailbox runners (`run_*.py`, SHIP) are all in place. The Wave-2 direct
+settlement seam and Wave-3 admin approval + external supplier order are wired and
+verified end to end (`wave2_e2e_check.py` and `wave3_order_e2e_check.py`). Remaining
+work is the **manual, browser-gated** Agentverse Mailbox connect for each agent +
+the live ASI:One demo (tracked in `DELIVERABLES.md`). See `DELIVERABLES.md` for the
+submission checklist + requirement matrix.

@@ -83,3 +83,4 @@ ASI:One wallet are required). Run order does not matter for the three agents.
 | Settlement seam fires on settle | (within `wave2_e2e_check.py`) `settle_transfer` → registered hook | `RequestPayment` sent to the chat user for the final plan (ref `pay-…`) |
 | Full wired path (chat→negotiate→settle→pay) | `./.venv/bin/python wave2_e2e_check.py` | `WAVE2 E2E SUCCESS` — exit 0, clean 3× in a row |
 | 3-agent negotiation end to end | `BAYMAX_EXIT_WHEN_DONE=1 ./.venv/bin/python baymax_agents.py` | `shortfall_detected → … → confirmed` (split 150 + 50) |
+| Wave 3 admin gate + external order (offline, mock supplier) | `./.venv/bin/python wave3_order_e2e_check.py` | `WAVE3 ORDER E2E SUCCESS` — exit 0 (the live Browserbase order leg, like the live signed-payment leg, is not verifiable offline) |

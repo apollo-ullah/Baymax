@@ -22,3 +22,10 @@ redis>=5.0.0
 # (OpenAI-compatible client, base_url=https://api.asi1.ai/v1). The Wave 0
 # contract + negotiation do not require it.
 # openai>=1.40.0
+
+# --- Wave 3 (optional): external-supplier order via Browserbase --------------
+# Only needed when BAYMAX_BROWSERBASE=1. The order seam falls back to a
+# deterministic mock when these are absent, so offline harnesses don't need them.
+# stagehand
+# playwright
+# browserbase
