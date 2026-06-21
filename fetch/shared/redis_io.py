@@ -18,9 +18,16 @@ if str(_REDIS_SRC) not in sys.path:
 
 from redis_client import get_redis, ping_redis  # noqa: E402
 from forecast import get_forecast, write_forecast  # noqa: E402
+from inventory import (  # noqa: E402
+    get_inventory, get_item_inventory, get_surplus, write_inventory, write_surplus,
+)
+from transfers import get_recent_transfers, log_transfer  # noqa: E402
+from schema import EVENTS_CHANNEL  # noqa: E402
 
 __all__ = ["get_redis", "ping_redis", "get_forecast", "write_forecast",
-           "upsert_forecast_items"]
+           "upsert_forecast_items", "get_inventory", "get_item_inventory",
+           "get_surplus", "write_inventory", "write_surplus", "log_transfer",
+           "get_recent_transfers", "EVENTS_CHANNEL"]
 
 
 def upsert_forecast_items(region: str, new_items: dict) -> dict:
