@@ -1,19 +1,60 @@
-# Handoff Notes
+# Arize Track — Teammate Handoff
 
-## Current state
+## What this track does
 
-- Folder scaffolding created.
-- No application logic implemented yet.
-- All source modules are empty stubs.
+Uses Arize Phoenix + OpenTelemetry to make autonomous operational decisions
+observable and measurable.
 
-## Next steps
+## Traced Events
 
-1. Implement `src/phoenix_client.py` (Phoenix client/connection).
-2. Define trace models in `src/trace_schema.py`.
-3. Build out inventory, forecast, reasoning, and transfer modules.
-4. Wire up `src/demo_trace.py` as a runnable demo.
+- inventory_low
+- forecast_signal
+- reasoning_decision
+- transfer_recommendation
+- decision_chain
+- decision_outcome
 
-## Notes
+## Why it matters
 
-- This track is self-contained inside `tracks/arize`.
-- Do not depend on or modify other tracks.
+The system does not only log recommendations.
+
+It traces:
+
+inventory signal
+→ forecast signal
+→ reasoning decision
+→ transfer recommendation
+→ decision confidence
+→ outcome feedback
+
+This makes recommendations explainable and helps improve future decisions.
+
+## How to Run
+
+```bash
+cd tracks/arize
+cp .env.example .env
+pip install -r requirements.txt
+python3 src/demo_trace.py
+```
+
+Optional Phoenix UI:
+
+```bash
+python3 -m phoenix.server.main serve
+```
+
+Open:
+http://localhost:6006
+
+## Current Status
+
+- OpenTelemetry spans implemented
+- Phoenix exporter implemented
+- demo_trace.py working
+- decision_chain implemented
+- decision_outcome implemented
+
+## Important
+
+Do not rename trace names without updating all trace modules.
