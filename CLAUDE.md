@@ -36,6 +36,14 @@ docker compose -f ../tracks/redis/docker-compose.redis.yml up -d        # redis-
    ../../../adyan-agent-communication-layer/.venv/bin/python seed_demo_data.py)   # seed hospitals/inventory/surplus/forecast
 ```
 
+**Camera as the inventory source** (optional): `hardware/camera connection/sync_to_redis.py`
+counts saline per hospital via Claude Vision (green-straw divider → Hospital A left /
+B right) and writes `qty`/`pct`/`status` + `surplus` straight into the same Redis the
+negotiation reads. `surplus = max(0, count − reserve)` is what `redis_inventory` reads as
+`spare_capacity`. Keyless test path: `python "hardware/camera connection/sync_to_redis.py" --counts a=0,b=6`
+(only `redis` needed); real run uses the camera + `ANTHROPIC_API_KEY` (see `hardware/requirements.txt`).
+Chain: shelf → camera → Redis → agents.
+
 **Live ASI:One / Agentverse (Mailbox mode):** run each agent in its own terminal (order does not matter), then do the one-time browser Mailbox connect from each agent's Inspector URL (see `README.md` and `DELIVERABLES.md`):
 
 ```bash
