@@ -9,6 +9,11 @@ Run ONE per MacBook (each owns a single shelf — no green-straw split):
     REDIS_URL=redis://<A-ip>:6379 ANTHROPIC_API_KEY=sk-... \
         ./.venv/bin/python camera_worker.py --hospital b
 
+    # MacBook B over Tailscale (no manual IP — see tailscale_hosts.py)
+    BAYMAX_USE_TAILSCALE=1 TAILSCALE_SERVER=baymax-a TAILSCALE_PEER_B=baymax-b \\
+        ./.venv/bin/python camera_worker.py --hospital b
+    # or: ./scripts/tailscale_peer_b.sh
+
 Endpoints:
     GET  /stream   continuous MJPEG of the webcam (the dashboard's live feed)
     POST /scan     grab a frame -> Claude Vision count -> write Redis -> JSON
@@ -31,6 +36,14 @@ import os
 import threading
 import time
 from datetime import datetime, timezone
+from pathlib import Path
+
+# Load `.env` so ANTHROPIC_API_KEY is available without exporting it manually.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parent / ".env")
+except ImportError:
+    pass
 
 import cv2
 import uvicorn
@@ -90,15 +103,22 @@ def _status(pct: float) -> str:
 
 def _write_redis(hid: str, item: str, qty: int) -> dict:
     cap = max(1, CFG["capacity"])
+    reserve = CFG["reserve"]
     pct = round(min(100.0, max(0.0, qty / cap * 100.0)), 1)
     status = _status(pct)
-    surplus = max(0, qty - CFG["reserve"])
-    record = {"qty": qty, "pct": pct, "status": status,
-              "updated_at": datetime.now(timezone.utc).isoformat()}
+    surplus = max(0, qty - reserve)
+    shortfall = max(0, reserve - qty)
+    record = {
+        "qty": qty, "pct": pct, "status": status, "reserve": reserve,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
     r = _redis()
     r.hset(f"hospital:{hid}:inventory", item, json.dumps(record))
     r.hset(f"hospital:{hid}:surplus", item, str(surplus))
-    return {"qty": qty, "pct": pct, "status": status, "surplus": surplus}
+    return {
+        "qty": qty, "pct": pct, "status": status, "surplus": surplus,
+        "reserve": reserve, "shortfall": shortfall,
+    }
 
 
 app = FastAPI()
@@ -106,9 +126,11 @@ app = FastAPI()
 
 @app.get("/health")
 def health():
+    demo = vision_count.vision_demo_mode()
     return {"ok": True, "hospital": CFG["hospital"], "item": CFG["item"],
             "camera_ok": _camera_ok,
             "vision_ok": bool(os.getenv("ANTHROPIC_API_KEY")),
+            "vision_demo": demo,
             "mock_count": CFG["mock_count"]}
 
 
@@ -135,13 +157,17 @@ def scan():
     jpeg = _get_latest()
     notes = None
     count = CFG["mock_count"]
-    source = "mock"
+    source = "mock" if count is not None else None
     if count is None:
-        if jpeg is not None and os.getenv("ANTHROPIC_API_KEY"):
+        if not os.getenv("ANTHROPIC_API_KEY"):
+            notes = "ANTHROPIC_API_KEY not set — set it in .env for Claude Vision"
+        elif jpeg is None:
+            notes = "no camera frame — check permissions or use --mock-count N"
+        else:
             try:
                 count, notes = vision_count.count_shelf(jpeg, item)
                 source = "vision"
-            except Exception as e:           # vision down / quota / parse miss
+            except Exception as e:
                 notes = f"vision failed: {e}"
         if count is None:
             count, source = 0, "fallback-0"
@@ -160,19 +186,42 @@ def scan():
 def main() -> None:
     p = argparse.ArgumentParser(description="Per-MacBook camera worker (one shelf).")
     p.add_argument("--hospital", required=True, choices=["a", "b"])
-    p.add_argument("--item", default="Saline")
-    p.add_argument("--capacity", type=int, default=10)
-    p.add_argument("--reserve", type=int, default=2)
+    p.add_argument("--item", default=os.getenv("BAYMAX_ITEM", "Saline"))
+    p.add_argument("--capacity", type=int,
+                   default=int(os.getenv("BAYMAX_DEMO_CAPACITY", "10" if os.getenv("BAYMAX_VISION_DEMO", "").lower() in ("1", "true", "yes") else "100")),
+                   help="Shelf capacity for pct/status.")
+    p.add_argument("--reserve", type=int, default=None,
+                   help="Safety floor (hospital B): spare = max(0, qty - reserve). "
+                        "For hospital A, use --target instead.")
+    p.add_argument("--target", type=int, default=None,
+                   help="Required on-hand level (hospital A): shortfall = max(0, target - qty). "
+                        "Defaults: A=BAYMAX_DEMO_TARGET (3), B=BAYMAX_DEMO_RESERVE (1).")
+    p.add_argument("--demo", action="store_true",
+                   help="Count water bottles as inventory (sets BAYMAX_VISION_DEMO=1).")
     p.add_argument("--device", type=int, default=0)
     p.add_argument("--port", type=int, default=8765)
     p.add_argument("--mock-count", type=int, default=None,
                    help="Force the scan count (skip camera+Vision) — demo safety.")
     a = p.parse_args()
+    if a.demo:
+        os.environ["BAYMAX_VISION_DEMO"] = "1"
+    demo = os.getenv("BAYMAX_VISION_DEMO", "").lower() in ("1", "true", "yes")
+    if a.hospital == "a":
+        threshold = a.target if a.target is not None else int(
+            os.getenv("BAYMAX_DEMO_TARGET", "3" if demo else "50"))
+    else:
+        threshold = a.reserve if a.reserve is not None else int(
+            os.getenv("BAYMAX_DEMO_RESERVE", "1" if demo else "50"))
     CFG.update(hospital=a.hospital, item=a.item, capacity=a.capacity,
-               reserve=a.reserve, device=a.device, mock_count=a.mock_count)
+               reserve=threshold, device=a.device, mock_count=a.mock_count)
+    import tailscale_hosts
+    if a.hospital == "b":
+        tailscale_hosts.apply_env("peer-b")
     threading.Thread(target=_capture_loop, daemon=True).start()
     print(f"[camera_worker] hospital={a.hospital} item={a.item} port={a.port} "
-          f"mock_count={a.mock_count} "
+          f"mock_count={a.mock_count} vision_demo={vision_count.vision_demo_mode()} "
+          f"capacity={a.capacity} threshold={threshold} "
+          f"({'target on-hand' if a.hospital == 'a' else 'safety reserve'}) "
           f"REDIS_URL={os.getenv('REDIS_URL', 'redis://localhost:6379')}")
     uvicorn.run(app, host="0.0.0.0", port=a.port)
 

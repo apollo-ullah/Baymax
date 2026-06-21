@@ -14,7 +14,7 @@ README_PATH = os.path.join(os.path.dirname(__file__), "README.md")
 
 agent = Agent(
     name="baymax_hello",
-    port=8001,
+    port=8010,  # 8001 is Hospital A (run_front.py); avoid collision
     seed=os.getenv("AGENT_SEED_PHRASE"),
     mailbox=True,
     readme_path=README_PATH,

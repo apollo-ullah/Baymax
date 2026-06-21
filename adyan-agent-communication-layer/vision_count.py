@@ -19,7 +19,12 @@ import re
 MODEL = "claude-sonnet-4-6"
 
 
-def _prompt(item: str) -> str:
+def vision_demo_mode() -> bool:
+    """When on, count hackathon props (water bottles, etc.) as the inventory item."""
+    return os.getenv("BAYMAX_VISION_DEMO", "").lower() in ("1", "true", "yes")
+
+
+def _prompt_clinical(item: str) -> str:
     return (
         "You are a hospital supply inventory scanner. This image shows ONE "
         "hospital's supply shelf.\n\n"
@@ -30,6 +35,35 @@ def _prompt(item: str) -> str:
         'NOTES: <one short sentence, or "None">\n\n'
         "If nothing is visible, return 0."
     )
+
+
+def _prompt_demo(item: str) -> str:
+    """Hackathon / desk demo: water bottles and similar props stand in for {item}."""
+    hint = (os.getenv("BAYMAX_VISION_HINT") or "").strip()
+    extra = f"\nAdditional context: {hint}\n" if hint else ""
+    return (
+        "You are a hospital supply inventory scanner running a LIVE DEMO. "
+        "Real saline/IV stock is not available — everyday props stand in for "
+        f"medical inventory (count them as \"{item}\").\n\n"
+        f"Count every visible bottle-like unit on the shelf as one {item} "
+        "for inventory purposes. Include:\n"
+        "  • plastic water bottles and beverage bottles\n"
+        "  • drink bottles held in hand or on the shelf\n"
+        "  • any similar upright liquid container used as a demo prop\n\n"
+        "Do NOT return COUNT: 0 just because the object is not genuine hospital "
+        "equipment — if you see demo bottles/props, count them.\n"
+        f"{extra}\n"
+        "Respond in EXACTLY this format, nothing else:\n"
+        "COUNT: <integer>\n"
+        'NOTES: <one short sentence describing what you counted, or "None">\n\n'
+        "If the shelf is empty or no bottle-like props are visible, return 0."
+    )
+
+
+def _prompt(item: str) -> str:
+    if vision_demo_mode():
+        return _prompt_demo(item)
+    return _prompt_clinical(item)
 
 
 _COUNT_RE = re.compile(r"COUNT:\s*(\d+)", re.IGNORECASE)
@@ -83,7 +117,11 @@ def main() -> None:
     p = argparse.ArgumentParser(description="Single-shelf Claude Vision count.")
     p.add_argument("--image", required=True, help="Path to a shelf image (JPEG/PNG).")
     p.add_argument("--item", default="Saline", help="Item name (default: Saline).")
+    p.add_argument("--demo", action="store_true",
+                   help="Count water bottles / demo props (same as BAYMAX_VISION_DEMO=1).")
     a = p.parse_args()
+    if a.demo:
+        os.environ["BAYMAX_VISION_DEMO"] = "1"
     img = cv2.imread(a.image)
     if img is None:
         sys.exit(f"ERROR: could not read image at {a.image!r}")

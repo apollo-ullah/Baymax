@@ -222,6 +222,121 @@ leg) is the one path not verifiable offline.
 
 ---
 
+## Two-camera demo over Tailscale (unreliable WiFi)
+
+Phone hotspots and conference WiFi often **block device-to-device ports**, so
+MacBook B cannot reach MacBook A's Redis or camera worker by LAN IP. Tailscale
+gives each laptop a stable `100.x` address on a private mesh — no public inbound
+ports required.
+
+### One-time setup (both MacBooks)
+
+1. Install [Tailscale](https://tailscale.com/download) and sign in to the **same tailnet**.
+2. Set hostnames (stable MagicDNS names):
+   ```bash
+   sudo tailscale set --hostname=baymax-a   # MacBook A — server
+   sudo tailscale set --hostname=baymax-b   # MacBook B — remote camera
+   ```
+3. Copy `.env.example` → `.env` and set:
+   ```bash
+   BAYMAX_USE_TAILSCALE=1
+   TAILSCALE_SERVER=baymax-a
+   TAILSCALE_PEER_B=baymax-b
+   ```
+
+### MacBook A (server)
+
+Four terminals (or use the helper script):
+
+```bash
+./scripts/tailscale_server.sh redis       # Redis (:6379)
+./scripts/tailscale_server.sh front       # run_front.py
+./scripts/tailscale_server.sh worker-a    # camera_worker --hospital a
+./scripts/tailscale_server.sh dashboard   # scan_dashboard (:8000)
+```
+
+### Single MacBook (no Tailscale, no second laptop)
+
+Use **`run_dashboard_demo.py`** — all three hospital agents in one process.
+Do **not** use `run_front.py` alone for the dashboard; it cannot collect offers
+from B/C without those agents running too.
+
+```bash
+./scripts/single_mac_demo.sh          # prints the 4-terminal recipe
+./scripts/single_mac_demo.sh redis
+./scripts/single_mac_demo.sh agents   # run_dashboard_demo.py
+./scripts/single_mac_demo.sh worker-a # Claude Vision on Hospital A shelf
+./scripts/single_mac_demo.sh worker-b # Hospital B on port 8766
+./scripts/single_mac_demo.sh dashboard
+```
+
+Open `http://localhost:8080` → **Scan & Negotiate** → approve at the gate.
+Ensure `ANTHROPIC_API_KEY` is in `.env`. For desk demos with **water bottles**
+as props, set `BAYMAX_VISION_DEMO=1` (enabled by default in `single_mac_demo.sh`).
+
+**Two-bottle pitch:** hold 2 bottles in each camera frame. Defaults:
+`BAYMAX_DEMO_TARGET=3` (A needs 3 on hand → shortfall **1**),
+`BAYMAX_DEMO_RESERVE=1` (B keeps 1 safe → spare **1**) → agents trade 1 unit.
+
+### MacBook B (peer, Tailscale)
+
+```bash
+./scripts/tailscale_peer_b.sh
+```
+
+Worker B writes inventory to A's Redis over Tailscale (`REDIS_URL` auto-set).
+
+---
+
+### Smoke tests (Tailscale)
+
+After both workers are up:
+
+```bash
+# on A
+./scripts/tailscale_server.sh smoke
+
+# on B
+./scripts/tailscale_peer_b.sh smoke
+```
+
+Print resolved URLs without starting services:
+
+```bash
+eval "$(./scripts/tailscale_env.sh server)"   # MacBook A
+eval "$(./scripts/tailscale_env.sh peer-b)"   # MacBook B
+./.venv/bin/python tailscale_hosts.py --role status
+```
+
+Hotspot/LAN IPs still work — leave `BAYMAX_USE_TAILSCALE` unset and set
+`REDIS_URL` / `WORKER_B_URL` manually as in `scan_dashboard.py`'s header.
+
+### Port map (single MacBook)
+
+| Port | Service |
+| :-- | :-- |
+| 6379 | Redis |
+| 8000 | uAgents Bureau (`run_dashboard_demo.py`, offline harnesses) |
+| 8080 | Scan dashboard UI |
+| 8001 | Hospital A (`run_front.py` Mailbox mode) |
+| 8002 | Hospital B (`run_hospital_b.py`) |
+| 8003 | Hospital C (`run_hospital_c.py`) |
+| 8765 / 8766 | Camera workers A / B |
+| 8081 | RedisInsight UI (not 8001 — that is Hospital A) |
+
+If `run_front.py` fails with **address already in use on 8001**, something else
+is squatting the port (often `hello_world_agent.py` or an old Redis Stack mapping).
+Free the ports and restart Redis with the updated compose mapping:
+
+```bash
+./scripts/free_demo_ports.sh
+docker compose -f ../tracks/redis/docker-compose.redis.yml down
+docker compose -f ../tracks/redis/docker-compose.redis.yml up -d
+./.venv/bin/python run_front.py
+```
+
+---
+
 ## Status
 
 Wave 0 (frozen contract) + the 3-agent negotiation, the ASI:One FRONT agent

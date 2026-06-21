@@ -156,13 +156,17 @@ def redis_get_inventory(hospital: str, item: str) -> InventoryState:
 
     surplus_raw = client.hgetall(schema.surplus_key(hid))
     surplus_field = _canon_field(item, surplus_raw.keys())
-    if surplus_field is not None:
-        surplus = int(float(surplus_raw[surplus_field]))
-        # spare_capacity = qty - safety_threshold, so this yields exactly surplus.
+    surplus = int(float(surplus_raw[surplus_field])) if surplus_field is not None else 0
+
+    # Camera workers store a fixed `reserve` (minimum safe stock). When present,
+    # use it as safety_threshold so a low shelf count (qty < reserve) still reads
+    # as a shortfall. Without it, fall back to qty-surplus (legacy) or 50% capacity.
+    reserve = int(record.get("reserve", 0) or 0)
+    if reserve > 0:
+        safety_threshold = reserve
+    elif surplus_field is not None:
         safety_threshold = max(0, qty - surplus)
     else:
-        # No declared surplus: keep a sane reserve so spare_capacity is 0-ish and
-        # a low requester still reads as short.
         safety_threshold = round(capacity * 0.5)
 
     return InventoryState(

@@ -4,7 +4,13 @@ Single pane of glass for the demo: two live camera feeds, a one-click Scan, and 
 one-click Scan & Negotiate that triggers the FRONT agent and streams the live
 negotiation back onto the page.
 
-    WORKER_B_URL=http://<B-ip>:8765 ./.venv/bin/python scan_dashboard.py   # :8000
+    ./.venv/bin/python scan_dashboard.py   # :8080 (Bureau uses :8000)
+
+Over Tailscale (when public WiFi blocks LAN peers):
+
+    BAYMAX_USE_TAILSCALE=1 TAILSCALE_SERVER=baymax-a TAILSCALE_PEER_B=baymax-b \\
+        ./.venv/bin/python scan_dashboard.py
+    # or: ./scripts/tailscale_server.sh dashboard
 
 Talks to:
     * the two camera_worker.py servers (POST /scan; their /stream is embedded
@@ -16,20 +22,65 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from pathlib import Path
 
 import httpx
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parent / ".env")
+except ImportError:
+    pass
+
 import dashboard_bus
+import tailscale_hosts
+
+tailscale_hosts.apply_env("server")
 
 WORKER_A_URL = os.getenv("WORKER_A_URL", "http://localhost:8765")
 WORKER_B_URL = os.getenv("WORKER_B_URL", "http://localhost:8766")
-ITEM = os.getenv("BAYMAX_ITEM", "saline")
-PORT = int(os.getenv("DASHBOARD_PORT", "8000"))
+ITEM = os.getenv("BAYMAX_ITEM", "Saline")
+PORT = int(os.getenv("DASHBOARD_PORT", "8080"))
+MIN_NEED = int(os.getenv("BAYMAX_DEMO_MIN_NEED", "1"))
 
 app = FastAPI()
+
+
+def _shortfall_from_scan(side: dict) -> int:
+    """Derive need from a camera /scan response (reserve - qty)."""
+    if not side or side.get("error"):
+        return 0
+    if "shortfall" in side:
+        return max(0, int(side["shortfall"]))
+    qty = int(side.get("qty") or 0)
+    reserve = int(side.get("reserve") or 50)
+    return max(0, reserve - qty)
+
+
+def _scan_summary(scanned: dict) -> dict:
+    a = scanned.get("hospital_a") or {}
+    b = scanned.get("hospital_b") or {}
+    need = _shortfall_from_scan(a)
+    spare_b = max(0, int(b.get("qty") or 0) - int(b.get("reserve") or 1))
+    return {
+        "hospital_a_qty": a.get("qty"),
+        "hospital_b_qty": b.get("qty"),
+        "hospital_a_target": a.get("reserve"),
+        "hospital_b_reserve": b.get("reserve"),
+        "hospital_a_source": a.get("source"),
+        "hospital_b_source": b.get("source"),
+        "shortfall": need,
+        "hospital_b_spare": spare_b,
+        "will_request": need if need > 0 else 0,
+        "demo_pitch": (
+            f"A has {a.get('qty')} (needs {a.get('reserve')} on hand, short {need}); "
+            f"B has {b.get('qty')} (keeps {b.get('reserve')} safe, can spare {spare_b})"
+            if need > 0 else None
+        ),
+    }
 
 
 async def _scan_one(url: str) -> dict:
@@ -54,8 +105,22 @@ async def scan():
 @app.post("/scan-and-negotiate")
 async def scan_and_negotiate():
     scanned = await _scan_both()
-    trig = dashboard_bus.push_trigger(item=ITEM, requester="Hospital A", quantity=None)
-    return JSONResponse({"scanned": scanned, "triggered": trig})
+    summary = _scan_summary(scanned)
+    need = summary["shortfall"]
+    if need <= 0:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "No shortfall detected at Hospital A",
+                "scanned": scanned,
+                "summary": summary,
+                "hint": "Hold 2 bottles in frame for each hospital. A needs "
+                        f"target={summary.get('hospital_a_target') or 3} on hand.",
+            },
+        )
+    trig = dashboard_bus.push_trigger(
+        item=ITEM, requester="Hospital A", quantity=need)
+    return JSONResponse({"scanned": scanned, "summary": summary, "triggered": trig})
 
 
 @app.post("/decide")
@@ -72,10 +137,16 @@ async def decide(req: Request):
 async def events():
     async def gen():
         yield "data: " + json.dumps(
-            {"state": "connected", "detail": "Waiting for a negotiation…"}) + "\n\n"
+            {"state": "connected", "detail": "Listening for negotiations…"}) + "\n\n"
         async for msg in dashboard_bus.narration_events():
             yield "data: " + json.dumps(msg) + "\n\n"
-    return StreamingResponse(gen(), media_type="text/event-stream")
+            # Keepalive comment so proxies/browsers don't drop idle SSE.
+            yield ": keepalive\n\n"
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/health")
@@ -184,7 +255,8 @@ function paint(side,d){
   if(!d||d.error){card.querySelector("[data-meta]").textContent="error: "+((d&&d.error)||"no data");return;}
   card.querySelector("[data-qty]").textContent=d.qty;
   card.querySelector("[data-meta]").textContent=
-    (d.item||"")+" · surplus "+(d.surplus??"–")+" · "+(d.source||"");
+    (d.item||"")+" · surplus "+(d.surplus??"–")+" · "+(d.source||"")
+    +(d.notes?" · "+d.notes:"");
   const pill=card.querySelector("[data-pill]");
   pill.textContent=d.status||""; pill.className="pill "+(d.status||"");
   card.querySelector("[data-bar]").style.width=Math.max(2,Math.min(100,d.pct||0))+"%";
@@ -197,9 +269,27 @@ async function scan(){
 }
 async function negotiate(){
   const b=$("#btn-neg"); b.disabled=true; $("#log").innerHTML=""; hideGate();
-  try{const r=await fetch("/scan-and-negotiate",{method:"POST"});const j=await r.json();
-      paint("a",j.scanned.hospital_a);paint("b",j.scanned.hospital_b);}
-  catch(e){}finally{b.disabled=false;}
+  try{
+    const r=await fetch("/scan-and-negotiate",{method:"POST"});
+    const j=await r.json();
+    if(!r.ok){
+      const li=document.createElement("li"); li.className="failed";
+      li.innerHTML='<span class="state">scan</span>'+(j.error||j.hint||"negotiate failed");
+      $("#log").appendChild(li);
+      if(j.scanned){paint("a",j.scanned.hospital_a);paint("b",j.scanned.hospital_b);}
+      return;
+    }
+    paint("a",j.scanned.hospital_a);paint("b",j.scanned.hospital_b);
+    if(j.summary&&j.summary.demo_pitch){
+      const li=document.createElement("li");
+      li.innerHTML='<span class="state">scan</span>'+j.summary.demo_pitch;
+      $("#log").appendChild(li);
+    }
+  }catch(e){
+    const li=document.createElement("li"); li.className="failed";
+    li.innerHTML='<span class="state">error</span>'+String(e);
+    $("#log").appendChild(li);
+  }finally{b.disabled=false;}
 }
 $("#btn-scan").onclick=scan; $("#btn-neg").onclick=negotiate;
 let curReq=null;
@@ -219,6 +309,7 @@ es.onmessage=e=>{
   li.innerHTML='<span class="state">'+(m.state||"")+"</span>"+(m.detail||"");
   $("#log").appendChild(li); $("#log").scrollTop=$("#log").scrollHeight;
   if(st==="awaiting_approval") showGate(m.req_id);
+  if(st==="idle"||st==="connected") return; // skip noise in feed
   if(m.final) hideGate();
 };
 </script></body></html>"""
