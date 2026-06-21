@@ -15,11 +15,11 @@
 ## Setup
 
 ```bash
-cd tracks/redis
+cd redis
 cp .env.example .env
 docker compose -f docker-compose.redis.yml up -d
 pip install -r requirements.txt
-python src/demo_run.py
+python3 src/demo_run.py
 ```
 
 This starts a local Redis Stack instance (ports `6379` and `8001`), seeds demo data, and runs the full end-to-end flow: inventory, forecast, shortfall alerts, a hospital-to-hospital transfer, and vector history recall.

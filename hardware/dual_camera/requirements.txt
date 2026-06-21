@@ -1,0 +1,13 @@
+# Raspberry Pi 5 dual-camera validation.
+#
+# IMPORTANT: On Raspberry Pi OS, Picamera2 must be installed as a SYSTEM
+# package (it depends on the libcamera stack), NOT via pip:
+#
+#     sudo apt install -y python3-picamera2
+#
+# It is listed here only for documentation / non-Pi reference. Do not expect
+# `pip install picamera2` to work on the Pi.
+picamera2
+
+# Pillow is pulled in by picamera2 on the Pi, but listed for completeness.
+pillow
