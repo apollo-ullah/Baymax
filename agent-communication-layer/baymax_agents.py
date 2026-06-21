@@ -146,6 +146,12 @@ def _publish_event(payload: dict) -> None:
             pass
 
 
+def _emit(state: str, detail: str, req_id: str = "") -> None:
+    """Publish a granular narration event (inter-agent FETCH traffic)."""
+    _publish_event({"state": state, "detail": detail, "final": False,
+                    "req_id": req_id, "source": "agent"})
+
+
 # Provider-side held legs awaiting a doctor's release approval (tap 2), keyed by
 # proposal_id. Shared module-global (Bureau is one process). Each entry carries
 # what resume_release_decision needs to answer the FRONT.

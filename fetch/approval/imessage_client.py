@@ -47,8 +47,13 @@ end run
 
 def _recipient_for(hospital_id: str) -> str | None:
     """Per-hospital recipient (IMESSAGE_TO_HOSPITAL_A) falling back to a shared
-    IMESSAGE_TO for single-phone demos. Returns None if nothing is configured."""
+    IMESSAGE_TO for single-phone demos. Returns None if nothing is configured.
+
+    Hospital C has no dedicated phone in the demo, so it defaults to Hospital B's
+    recipient (same on-call doctor) unless IMESSAGE_TO_HOSPITAL_C is set."""
     specific = os.getenv(f"IMESSAGE_TO_{hospital_id.upper()}")
+    if not specific and hospital_id.lower() == "hospital_c":
+        specific = os.getenv("IMESSAGE_TO_HOSPITAL_B")
     return (specific or os.getenv("IMESSAGE_TO") or "").strip() or None
 
 

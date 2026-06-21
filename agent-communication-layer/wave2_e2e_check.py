@@ -30,6 +30,7 @@ import re
 os.environ["PAYMENT_VERIFY_ONCHAIN"] = "false"
 os.environ.pop("BAYMAX_EXIT_WHEN_DONE", None)  # don't exit at CONFIRMED; pay first
 os.environ.setdefault("BAYMAX_OFFER_TIMEOUT", "3.0")
+os.environ["BAYMAX_REDIS"] = "0"  # force deterministic mock so test is self-contained
 
 import agent_base  # noqa: F401,E402  (installs the Python 3.14 event loop first)
 
