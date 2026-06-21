@@ -1,4 +1,0 @@
-uagents
-httpx
-python-dotenv
-redis

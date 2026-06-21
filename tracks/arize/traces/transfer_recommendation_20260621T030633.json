@@ -1,0 +1,9 @@
+{
+  "trace_name": "transfer_recommendation",
+  "source_hospital": "hospital_b",
+  "destination_hospital": "hospital_a",
+  "item": "IV Fluids",
+  "transfer_quantity": 150,
+  "eta_minutes": 18,
+  "severity": "critical"
+}

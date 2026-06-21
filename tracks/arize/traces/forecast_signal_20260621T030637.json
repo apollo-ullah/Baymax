@@ -1,0 +1,7 @@
+{
+  "trace_name": "forecast_signal",
+  "region": "san_francisco",
+  "item": "IV Fluids",
+  "predicted_demand_increase_pct": 40,
+  "reason": "Respiratory illness spike and cold front"
+}

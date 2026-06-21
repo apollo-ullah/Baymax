@@ -1,0 +1,5 @@
+arize-phoenix
+openinference-instrumentation
+opentelemetry-sdk
+opentelemetry-exporter-otlp-proto-http
+python-dotenv

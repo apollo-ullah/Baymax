@@ -1,0 +1,7 @@
+{
+  "trace_name": "inventory_low",
+  "hospital_id": "hospital_a",
+  "item": "IV Fluids",
+  "current_pct": 20,
+  "status": "low"
+}
