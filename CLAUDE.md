@@ -1,0 +1,119 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this is
+
+**Stockpile** — a network of Fetch.ai uAgents that detect hospital supply shortfalls and autonomously negotiate + settle inter-facility transfers. A supply manager states an intent in natural language via ASI:One ("Hospital A is short on IV fluids"); the FRONT agent broadcasts the need, ranks offers from surplus facilities, composes a (possibly split) transfer, and settles it as a real Fetch **testnet** FET transaction — narrating each step back into the chat. Built for the Fetch.ai "From Intent to Action" challenge.
+
+**All code lives in `adyan-agent-communication-layer/`.** The repo root holds only that directory, `stockpile_PRD_v2.md` (the product spec), and an image. Run every command from inside `adyan-agent-communication-layer/`; the virtualenv is at `adyan-agent-communication-layer/.venv`.
+
+## Commands
+
+```bash
+cd adyan-agent-communication-layer
+python -m venv .venv && source .venv/bin/activate     # Python 3.12+ (developed on 3.14)
+pip install -r requirements.txt
+```
+
+There is **no test runner, linter, or build step.** The verification harnesses below *are* the test suite — each is a self-contained, self-exiting script. Prefer `./.venv/bin/python <script>` so the right interpreter is used.
+
+| Goal | Command |
+| :-- | :-- |
+| Run the full 3-agent negotiation in one process (Bureau) | `STOCKPILE_EXIT_WHEN_DONE=1 ./.venv/bin/python stockpile_agents.py` |
+| Pick the scenario | prefix with `STOCKPILE_ITEM="IV fluids"` (split, default) / `"saline"` (full cover) / `"sutures"` (no offer → escalation) |
+| FRONT chat→negotiate→narrate loop, no network | `STOCKPILE_SELFTEST=1 ./.venv/bin/python front_agent.py` |
+| Offline end-to-end incl. settlement (chat→negotiate→settle→pay), no ASI:One/wallet | `./.venv/bin/python wave2_e2e_check.py` |
+| Payment-protocol handshake in isolation (2 agents, fake tx) | `PAYMENT_VERIFY_ONCHAIN=false ./.venv/bin/python two_agent_payment_spike.py` |
+| Re-derive agent addresses from seeds | `./.venv/bin/python -c "import agent_base; print(*(f'{f}: {agent_base.address_for(f)}' for f in ('Hospital A','Hospital B','Hospital C')), sep=chr(10))"` |
+| Negotiation against **live Redis** inventory (split sourced from `tracks/redis`) | `STOCKPILE_REDIS=1 STOCKPILE_ITEM="IV fluids" STOCKPILE_NEED=200 STOCKPILE_EXIT_WHEN_DONE=1 ./.venv/bin/python stockpile_agents.py` |
+
+**Live Redis bring-up** (needed once before the Redis-backed row above; `redis` + `python-dotenv` must be in `.venv`):
+
+```bash
+docker compose -f ../tracks/redis/docker-compose.redis.yml up -d        # redis-stack on :6379
+(cd ../tracks/redis/src && REDIS_URL=redis://localhost:6379 \
+   ../../../adyan-agent-communication-layer/.venv/bin/python seed_demo_data.py)   # seed hospitals/inventory/surplus/forecast
+```
+
+**Camera as the inventory source** (optional): `hardware/camera connection/sync_to_redis.py`
+counts saline per hospital via Claude Vision (green-straw divider → Hospital A left /
+B right) and writes `qty`/`pct`/`status` + `surplus` straight into the same Redis the
+negotiation reads. `surplus = max(0, count − reserve)` is what `redis_inventory` reads as
+`spare_capacity`. Keyless test path: `python "hardware/camera connection/sync_to_redis.py" --counts a=0,b=6`
+(only `redis` needed); real run uses the camera + `ANTHROPIC_API_KEY` (see `hardware/requirements.txt`).
+Chain: shelf → camera → Redis → agents.
+
+**Live ASI:One / Agentverse (Mailbox mode):** run each agent in its own terminal (order does not matter), then do the one-time browser Mailbox connect from each agent's Inspector URL (see `README.md` and `DELIVERABLES.md`):
+
+```bash
+./.venv/bin/python run_hospital_b.py     # surplus facility B
+./.venv/bin/python run_hospital_c.py     # surplus facility C
+./.venv/bin/python run_front.py          # Hospital A — ASI:One chat + payment entrypoint
+```
+
+## Architecture
+
+### The Wave-0 frozen contract (zero model drift)
+
+`protocol.py` is the **single source of truth** for every cross-agent message model and the negotiation state machine. All other modules import from it and must never redefine these models — changing a field is a contract change. Two model categories:
+
+- **Official Fetch surfaces, re-exported *unchanged*:** the Chat Protocol (`AgentChatProtocol` v0.3.0) and Payment Protocol (`AgentPaymentProtocol` v0.1.0) classes come from `uagents_core.contrib.protocols.*` and are re-exported here. ASI:One/Agentverse match these by **schema digest**, so a local copy would be a different, incompatible protocol. Never hand-define `RequestPayment`, `ChatMessage`, etc.
+- **Stockpile negotiation models** (defined here): `SupplyRequest`, `SupplyOffer`, `TransferProposal`, `TransferAccept`, `TransferReject`, plus `NegotiationState` / `Urgency`.
+
+### The negotiation core and its seams
+
+`stockpile_agents.py` runs the PRD §10 chain across three agents (Hospital A = FRONT/requester, B & C = surplus):
+
+```
+shortfall_detected → requesting → collecting_offers → evaluating
+   → (re_planning if no single offer covers the need) → proposing → settling → confirmed
+```
+
+Two layers deliberately sit behind **stubbed seams** in `interfaces.py`, owned by other workstreams and shipping as deterministic mocks. **The function signatures are the contract:**
+- `get_inventory(hospital, item) -> InventoryState` — Redis seam, **now live**. With `STOCKPILE_REDIS=1` it delegates to `redis_inventory.py`, which reads the teammates' Redis (`tracks/redis`, keyed `hospital_a`/`"IV Fluids"` — `redis_inventory.py` maps the display names + canonicalises items) and derives `safety_threshold = qty − surplus` so `spare_capacity` equals the Redis surplus. On ANY failure (Redis down, lib missing, unknown hospital) it falls back to the hardcoded mock below — fail-closed, never hangs (FR1). Default (no env) = mock, so the offline harnesses need no Redis. `distance_between` likewise uses Redis `meta` lat/lng in Redis mode. The mock still encodes the IV-fluids/saline/sutures scenarios; note the seeded Redis has no `sutures`, so the no-offer scenario is mock-only.
+- `rank_offers(need, offers) -> RankedPlan` — Claude/ranking seam. Mock = nearest-first greedy allocator that produces the canonical 150+50 split. `interfaces.py` has **no uagents dependency** by design; the agent layer adapts between its plain dataclasses and `protocol.py` wire models.
+
+The settlement step is also a seam: `stockpile_agents.settle_transfer()` delegates to a hook registered via `register_settlement_hook(...)`. The core **never imports the settlement layer** — it's a one-way dependency wired at deployment time (`run_front.py` registers `settlement.settle_via_payment_protocol`). With no hook (local Bureau demo), `settle_transfer` returns a stub reference so the chain still completes.
+
+### Run modes
+
+- **Bureau (one process):** `stockpile_agents.py`'s `__main__` and the various self-tests build all agents in a single `Bureau`. In-process negotiation state lives in the module-global `NEGOTIATIONS` dict (a real multi-process deploy would move this to `ctx.storage`/Redis). Importing `stockpile_agents` has **no side effects** — agent/Bureau construction is guarded under `if __name__ == "__main__"`.
+- **Mailbox (separate processes):** the `run_*.py` runners wrap each agent with `build_hospital_agent(..., mailbox=True)` for Agentverse/ASI:One reachability without a public endpoint.
+
+### FRONT and settlement wiring
+
+- `front_agent.py` turns a chat utterance into a negotiation: `on_intent` → `parse_intent` (a deterministic keyword/regex parser; a commented ASI:One-LLM seam can drop in behind the same signature) → `start_negotiation(..., reply_to=<chat sender>)`. Setting `reply_to` makes every milestone stream back to ASI:One automatically as a `ChatMessage`. `parse_intent` has substantial hardening against the ASI:One LLM **echo loop** (it parrots our narration back) — milestone/meta regexes, an echo-chatter heuristic, and a per-sender cooldown.
+- `run_front.py` is the live entrypoint. It **reuses** `front_agent.build_front_agent()` (so the two construction paths can't drift), then layers on the Payment Protocol, registers the FET wallet, and registers the settlement hook. `build_front_agent()` alone does **not** attach payments — if you're debugging live settlement, the running process is `run_front.py`.
+- Settlement flow (seller side, `settlement.py`): on a settled deal the agent sends a standalone `RequestPayment` to the chat user → user's wallet replies `CommitPayment` → we verify the tx on-chain (cosmpy, in a worker thread) → reply `CompletePayment` / `CancelPayment`, then `finalize_after_payment` / `fail_after_payment` emit the terminal chat milestone.
+
+## Hard contracts and non-obvious gotchas
+
+These are easy to get wrong and have all bitten this codebase before:
+
+- **Import `agent_base` *first*, before constructing any `Agent` or `Protocol`.** Python 3.14 removed the implicit current event loop, but `uagents` 0.25.2 calls `asyncio.get_event_loop()` in `Agent.__init__`. `agent_base` installs a loop as an import side effect. Every module that builds agents imports it first on purpose.
+- **Testnet only, fail-closed.** `agent_base.py` raises if `FETCH_NETWORK` is anything other than `testnet`/empty; `network="testnet"` is forced on every agent. Payment verification pins `NetworkConfig.fetchai_stable_testnet()` (chain `dorado-1`, denom `atestfet`). Never route to mainnet.
+- **Payment role is the inverse of the docs prose.** Use `Protocol(spec=payment_protocol_spec, role="seller")` for our service agent. The *installed* spec maps each role to the messages it may **RECEIVE**: `roles["seller"] = {CommitPayment, RejectPayment}` (what we receive after sending `RequestPayment`). Verify before trusting any doc:
+  `./.venv/bin/python -c "from uagents_core.contrib.protocols.payment import payment_protocol_spec as s; print({r:sorted(m.__name__ for m in ms) for r,ms in s.roles.items()})"`
+- **ASI:One renders the in-chat FET payment card from `RequestPayment.metadata`.** It reads `metadata["provider_agent_wallet"]` (the fetch1… payee) and `metadata["fet_network"]`. Send `RequestPayment` with `metadata=None` and ASI:One rejects it at ingestion with *"Failed to process payment response by agent"* — before any approval, no card renders. `settlement.request_payment()` always populates these keys (mirroring `fetchai/innovation-lab-examples/fet-example`). Adding metadata does **not** change the protocol schema digest, so manifest matching is unaffected.
+- **`ctx.agent.wallet` does not exist inside a handler** — `ctx.agent` is an `AgentRepresentation` (address/identity only). Call `register_recipient_wallet(agent)` once at construction time (where `agent.wallet` is available) and use `resolve_recipient_wallet(ctx)` inside handlers.
+- **Never call sync cosmpy in an async handler.** `LedgerClient.query_tx()` blocks the event loop (~20s on a slow/unreachable RPC); always wrap with `asyncio.to_thread(...)`.
+- **Deterministic addresses from seeds.** Addresses are derived from `STOCKPILE_*_SEED` env vars; the dev fallback seeds in `agent_base.py` are public (local only). Set the seed env vars for any real deployment — addresses change accordingly.
+
+## Key environment variables
+
+| Var | Effect |
+| :-- | :-- |
+| `STOCKPILE_ITEM` | Bureau demo scenario: `"IV fluids"` (split, default) / `"saline"` (full cover) / `"sutures"` (no offer) |
+| `STOCKPILE_EXIT_WHEN_DONE` | Self-exit the process when a negotiation terminates (set in one-shot tests) |
+| `STOCKPILE_SELFTEST` | `front_agent.py`: run the in-process chat→negotiate→narrate self-test |
+| `STOCKPILE_OFFER_TIMEOUT` | Seconds to wait for offers before evaluating (Bureau ~4s; Mailbox needs 30s+) |
+| `STOCKPILE_SPARSE_NARRATION` | Only stream key milestones to ASI:One (avoids chat-relay 429s); set by `run_front.py` |
+| `STOCKPILE_MAX_REPLANS` | Bounded re-home attempts when a transfer leg is rejected (default 3) |
+| `STOCKPILE_REDIS` | `1`/`true` → `get_inventory`/`distance_between` read the live Redis (`tracks/redis`) via `redis_inventory.py`, falling back to the mock on failure. Unset = mock. |
+| `REDIS_URL` | Redis endpoint for `STOCKPILE_REDIS` mode (default `redis://localhost:6379`). `STOCKPILE_REDIS_TIMEOUT` bounds the socket (default 2s). |
+| `PAYMENT_VERIFY_ONCHAIN` | `false` skips the cosmpy tx query and trusts the commit — **dev/spike only**, no real settlement guarantee |
+| `STOCKPILE_PAYMENT_AMOUNT_FET` / `STOCKPILE_PAYMENT_PER_UNIT_FET` | Flat vs per-unit FET pricing per settlement |
+| `STOCKPILE_*_SEED`, `FETCH_NETWORK` | Agent seeds (loaded from `.env`); network guardrail (testnet only) |
+
+Secrets (`.env`, `private_keys.json`) and `.venv/` are gitignored. `DELIVERABLES.md` tracks submission status and the manual, browser-gated Mailbox-connect checklist; the live ASI:One signed-payment leg is the one path not verifiable offline.
