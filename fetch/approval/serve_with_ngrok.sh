@@ -1,21 +1,20 @@
 #!/usr/bin/env bash
-# Launch the approval service behind an ngrok tunnel so the iMessage accept/reject
-# links are tappable from a phone. One command:
+# Launch the Baymax UI (ui/app.py) behind an ngrok tunnel so the iMessage
+# approve/reject AND provider release links are tappable from a phone. One cmd:
 #
 #     ./fetch/approval/serve_with_ngrok.sh
 #
-# Requires (one-time): `ngrok config add-authtoken <token>` and the .venv with
-# fastapi/uvicorn. Reads optional NGROK_DOMAIN from the environment / .env to use
-# a stable ngrok domain (otherwise a random https URL is used each run).
+# Requires (one-time): an ngrok authtoken (NGROK_AUTHTOKEN in .env) and the .venv.
+# Reads optional NGROK_DOMAIN from the environment / .env for a stable URL.
 #
 # What it does:
-#   1. starts ngrok http <PORT>
+#   1. starts ngrok http <PORT>  (PORT defaults to the UI's 5001)
 #   2. reads the public https URL from ngrok's local API (127.0.0.1:4040)
-#   3. exports APPROVAL_BASE_URL = that URL  (so service.py builds tappable links)
-#   4. starts uvicorn; on Ctrl-C it kills ngrok too.
+#   3. exports APPROVAL_BASE_URL = that URL  (ui/app.py builds tappable links from it)
+#   4. starts the Flask UI; on Ctrl-C it kills ngrok too.
 set -euo pipefail
 
-PORT="${PORT:-8080}"
+PORT="${PORT:-5001}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
@@ -67,6 +66,9 @@ fi
 export APPROVAL_BASE_URL="$PUBLIC_URL"
 echo "✓ tunnel up: $PUBLIC_URL"
 echo "✓ APPROVAL_BASE_URL=$APPROVAL_BASE_URL"
-echo "▶ trigger a demo with:  curl -XPOST $PUBLIC_URL/shortage"
-echo "▶ starting uvicorn (Ctrl-C to stop both) ..."
-exec uvicorn fetch.approval.service:app --host 0.0.0.0 --port "$PORT"
+echo "▶ UI up — requester links: $PUBLIC_URL/req/<req_id>/{approve,order,reject}"
+echo "▶          provider links:  $PUBLIC_URL/release/<pid>/{approve,deny}"
+echo "▶ open the dashboard:       $PUBLIC_URL"
+echo "▶ starting the Baymax UI (Ctrl-C to stop both) ..."
+exec env UI_PORT="$PORT" APPROVAL_BASE_URL="$APPROVAL_BASE_URL" \
+     "${PYTHON:-.venv/bin/python}" ui/app.py

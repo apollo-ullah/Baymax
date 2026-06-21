@@ -60,22 +60,16 @@ REGION = os.getenv("FORECAST_REGION", "san_francisco")
 HARDWARE_DIR = Path(__file__).resolve().parents[1] / "hardware" / "camera connection"
 SYNC_SCRIPT = HARDWARE_DIR / "sync_to_redis.py"
 AGENT_DIR = Path(__file__).resolve().parents[1] / "agent-communication-layer"
-
-
-def _agent_python() -> str:
-    """Interpreter used to spawn the Bureau.
-
-    Prefer the agent layer's own venv; if it's missing, fall back to the
-    dashboard's own interpreter (the main .venv) so the Bureau still launches
-    as long as uagents is installed there.
-    """
-    candidate = AGENT_DIR / ".venv" / "bin" / "python"
-    if candidate.exists():
-        return str(candidate)
-    return sys.executable
-
-
-AGENT_VENV_PYTHON = _agent_python()
+# Prefer the agent-local venv; fall back to the repo-root .venv, then to whatever
+# interpreter is running this UI. (In this checkout the venv lives at the repo
+# root, not under agent-communication-layer/.)
+_AGENT_VENV = AGENT_DIR / ".venv" / "bin" / "python"
+_ROOT_VENV = Path(__file__).resolve().parents[1] / ".venv" / "bin" / "python"
+AGENT_VENV_PYTHON = (
+    _AGENT_VENV if _AGENT_VENV.exists()
+    else _ROOT_VENV if _ROOT_VENV.exists()
+    else Path(sys.executable)
+)
 
 # ── Bureau subprocess ─────────────────────────────────────────────────────────
 _bureau_proc: subprocess.Popen | None = None
@@ -123,6 +117,8 @@ def _ensure_bureau():
            "BAYMAX_OFFER_TIMEOUT": "4.0",
            "BAYMAX_SPARSE_NARRATION": "0",
            "BAYMAX_DASHBOARD_PORT": "8079",  # avoid conflict with Flask
+           # Two-tap handshake: providers hold each leg for their doctor's tap.
+           "BAYMAX_PROVIDER_APPROVAL": os.getenv("BAYMAX_PROVIDER_APPROVAL", "1"),
            "REDIS_URL": os.getenv("REDIS_URL", "redis://localhost:6379")}
     log_fh = open(BUREAU_LOG, "w")
     _bureau_proc = subprocess.Popen(
@@ -136,6 +132,34 @@ def _ensure_bureau():
 # ── In-memory narration state ─────────────────────────────────────────────────
 _narration_log: list[dict] = []    # last 50 events
 _awaiting_approval: dict = {}      # req_id -> {"detail": str, "notified": bool}
+_awaiting_release: dict = {}       # pid -> {"facility": str, "detail": str}
+
+# Facility display name -> hospital id (for IMESSAGE_TO_HOSPITAL_* + release routing).
+_FACILITY_TO_HID = {
+    "Hospital A": "hospital_a", "Hospital B": "hospital_b", "Hospital C": "hospital_c",
+}
+
+
+def _send_release_imessage(pid: str, facility: str, detail: str):
+    """Tap 2: text the PROVIDER facility's doctor an approve/deny link for one
+    held transfer leg. Routes to IMESSAGE_TO_HOSPITAL_B / _C via the facility's
+    hospital id; falls back to the shared IMESSAGE_TO if that's all that's set."""
+    base = os.getenv("APPROVAL_BASE_URL", f"http://localhost:{UI_PORT}").rstrip("/")
+    approve_url = f"{base}/release/{pid}/approve"
+    deny_url    = f"{base}/release/{pid}/deny"
+    msg = (
+        f"🏥 {facility}: release approval needed.\n"
+        f"{detail[:220]}\n\n"
+        f"✅ Approve release: {approve_url}\n"
+        f"❌ Deny: {deny_url}"
+    )
+    hid = _FACILITY_TO_HID.get(facility, "hospital_b")
+    try:
+        from fetch.approval.imessage_client import notify
+        notify(hid, msg)
+        log.info("[imessage] sent RELEASE request for %s (%s)", pid, facility)
+    except Exception as exc:
+        log.warning("[imessage] release send failed: %s", exc)
 
 
 def _send_approval_imessage(req_id: str, detail: str):
@@ -179,6 +203,10 @@ def _narration_subscriber():
         try:
             import redis as _redis_lib
             url = os.getenv("REDIS_URL", "redis://localhost:6379")
+            # NO socket_timeout here: pubsub.listen() blocks waiting for the next
+            # message, so a read timeout would fire every 2s, drop the connection,
+            # and miss events (the bug that made approvals never text). Use a
+            # periodic health check instead to detect a genuinely dead socket.
             r = _redis_lib.Redis.from_url(url, decode_responses=True,
                                           socket_connect_timeout=3, socket_timeout=10)
             # Start from the current end so we don't replay old events on startup
@@ -188,9 +216,22 @@ def _narration_subscriber():
                 items = r.lrange("baymax:narration:log", idx, idx + 49)
                 for raw in items:
                     try:
-                        _handle_narration_payload(json.loads(raw))
+                        payload = json.loads(raw)
                     except Exception:
-                        pass
+                        continue
+                    _handle_narration_payload(payload)
+
+                    # Tap 2: a provider facility is holding a leg for its doctor.
+                    state = payload.get("state")
+                    pid = payload.get("pid")
+                    if state == "release_pending" and pid and pid not in _awaiting_release:
+                        facility = payload.get("facility", "Hospital B")
+                        detail = payload.get("detail", "")
+                        _awaiting_release[pid] = {"facility": facility, "detail": detail}
+                        _send_release_imessage(pid, facility, detail)
+                    elif state in ("release_approved", "release_denied") and pid:
+                        _awaiting_release.pop(pid, None)
+
                 idx += len(items)
                 time.sleep(0.4)
         except Exception as exc:
@@ -229,6 +270,19 @@ def _push_decision(req_id: str, decision: str):
         log.info("[decision] pushed %s for req_id=%s", decision, req_id)
     except Exception as exc:
         log.warning("[decision] push failed: %s", exc)
+
+
+def _push_release(facility: str, pid: str, decision: str):
+    """RPUSH a provider release decision onto that facility's queue. The provider
+    agent (Hospital B/C) drains baymax:release_decision:{facility} in release_poll."""
+    try:
+        r = _redis()
+        r.rpush(f"baymax:release_decision:{facility}",
+                json.dumps({"pid": pid, "decision": decision}))
+        _awaiting_release.pop(pid, None)
+        log.info("[release] pushed %s for pid=%s (%s)", decision, pid, facility)
+    except Exception as exc:
+        log.warning("[release] push failed: %s", exc)
 
 
 def _push_trigger(item: str, requester: str = "Hospital A", quantity: int | None = None,
@@ -302,6 +356,7 @@ def get_state() -> dict:
         "alerts": [],
         "negotiation_log": _narration_log[-100:],
         "awaiting_approval": list(_awaiting_approval.keys()),
+        "awaiting_release": [{"pid": pid, **info} for pid, info in _awaiting_release.items()],
         "bureau_running": _bureau_proc is not None and _bureau_proc.poll() is None,
     }
 
@@ -804,28 +859,67 @@ def api_narration():
 
 # ── Approval endpoints ────────────────────────────────────────────────────────
 
-@app.route("/req/<rid>/approve")
-def req_approve(rid):
-    _push_decision(rid, "approve")
-    return _approval_page("Transfer Approved",
-        "<h2>Transfer Approved</h2>"
-        "<p>Baymax will proceed with the transfer. You'll receive a confirmation shortly.</p>")
+def _confirm_page(title: str, prompt: str, action_url: str, btn_label: str,
+                  approve: bool = True) -> str:
+    """A safe confirm page: GET renders it, the button POSTs the real action.
+    Link previews / prefetchers only ever issue the GET, so they can't fire the
+    decision — only a deliberate tap of the button does."""
+    bg = "#16a34a" if approve else "#dc2626"
+    return _approval_page(title,
+        f"<h2>{title}</h2><p>{prompt}</p>"
+        f"<form method='POST' action='{action_url}' style='margin-top:20px'>"
+        f"<button type='submit' style='font-size:16px;padding:13px 26px;border:none;"
+        f"border-radius:10px;color:#fff;background:{bg};cursor:pointer;font-weight:600'>"
+        f"{btn_label}</button></form>")
 
 
-@app.route("/req/<rid>/order")
-def req_order(rid):
-    _push_decision(rid, "order")
-    return _approval_page("External Order",
-        "<h2>External Order Initiated</h2>"
-        "<p>Baymax will source the supplies from an external supplier.</p>")
+@app.route("/req/<rid>/<decision>", methods=["GET", "POST"])
+def req_decision(rid, decision):
+    """Requester gate (tap 1). GET shows a confirm button; POST records it."""
+    decision = decision.lower()
+    labels = {"approve": "Approve transfer", "order": "Order externally",
+              "reject": "Reject transfer"}
+    if decision not in labels:
+        return _approval_page("Invalid", "<h2>Unknown decision</h2>")
+    if request.method == "GET":
+        return _confirm_page(
+            "Confirm — " + labels[decision],
+            f"Confirm you want to <b>{decision}</b> request <code>{rid}</code>.",
+            f"/req/{rid}/{decision}", labels[decision],
+            approve=decision in ("approve", "order"))
+    # POST → record the decision for the negotiation core.
+    _push_decision(rid, decision)
+    done = {"approve": ("Transfer Approved", "Baymax will proceed with the transfer."),
+            "order": ("External Order", "Baymax will source from an external supplier."),
+            "reject": ("Rejected", "The negotiation has been cancelled.")}[decision]
+    return _approval_page(done[0], f"<h2>{done[0]}</h2><p>{done[1]}</p>")
 
 
-@app.route("/req/<rid>/reject")
-def req_reject(rid):
-    _push_decision(rid, "reject")
-    return _approval_page("Rejected",
-        "<h2>Transfer Rejected</h2>"
-        "<p>The negotiation has been cancelled.</p>")
+# ── Provider release endpoints (tap 2 of the two-tap handshake) ───────────────
+
+@app.route("/release/<pid>/<decision>", methods=["GET", "POST"])
+def release_decision(pid, decision):
+    """Provider gate (tap 2). GET shows a confirm button; POST records the
+    release decision and routes it to the holding facility's agent."""
+    decision = decision.lower()
+    if decision not in ("approve", "deny"):
+        return _approval_page("Invalid", "<h2>Unknown decision</h2>")
+    facility = _awaiting_release.get(pid, {}).get("facility", "Hospital B")
+    if request.method == "GET":
+        lbl = "Approve release" if decision == "approve" else "Deny release"
+        return _confirm_page(
+            "Confirm — " + lbl,
+            f"Confirm <b>{facility}</b> will <b>{decision}</b> the release for "
+            f"leg <code>{pid}</code>.",
+            f"/release/{pid}/{decision}", lbl, approve=decision == "approve")
+    _push_release(facility, pid, decision)
+    if decision == "approve":
+        return _approval_page("Release Approved",
+            f"<h2>Release Approved</h2><p>{facility} will release this leg; the "
+            "transfer will settle once all legs are approved.</p>")
+    return _approval_page("Release Denied",
+        f"<h2>Release Denied</h2><p>{facility} declined to release. The requester "
+        "agent will re-plan or flag the shortfall.</p>")
 
 
 def _parse_negotiation_log(log_text: str) -> list[dict]:

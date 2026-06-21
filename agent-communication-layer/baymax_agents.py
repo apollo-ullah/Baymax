@@ -113,6 +113,14 @@ APPROVAL_TIMEOUT_S = float(os.getenv("BAYMAX_APPROVAL_TIMEOUT", "300"))
 # Default order quantity when none is stated and there's no shortfall.
 DEFAULT_ORDER_QTY = int(os.getenv("BAYMAX_DEFAULT_ORDER_QTY", "100"))
 
+# Two-tap handshake: when enabled, a provider facility (Hospital B/C) does NOT
+# auto-accept a proposed transfer leg — it holds the leg and waits for ITS OWN
+# doctor to approve releasing the stock (tap 2; tap 1 is the requester's
+# AWAITING_APPROVAL). Default off so existing harnesses keep their auto-accept.
+PROVIDER_APPROVAL = os.getenv("BAYMAX_PROVIDER_APPROVAL", "").lower() in ("1", "true", "yes")
+RELEASE_TIMEOUT_S = float(os.getenv("BAYMAX_RELEASE_TIMEOUT",
+                                    os.getenv("BAYMAX_APPROVAL_TIMEOUT", "300")))
+
 # In-process negotiation state, keyed by request_id. (Bureau runs one process;
 # a multi-process deployment would move this into ctx.storage / Redis.)
 NEGOTIATIONS: dict[str, dict] = {}
@@ -127,17 +135,22 @@ def register_narration_sink(fn) -> None:
     _NARRATION_SINKS.append(fn)
 
 
-def _emit(state: str, detail: str, req_id: str = "") -> None:
-    """Publish an extra, granular narration event (inter-agent FETCH traffic) to
-    every registered sink — independent of `_step`, so the dashboard timeline can
-    stream the agent-to-agent messages one by one. Swallows all sink errors."""
-    payload = {"state": state, "detail": detail, "final": False,
-               "req_id": req_id, "source": "agent"}
+def _publish_event(payload: dict) -> None:
+    """Fan a payload out to every narration sink; swallow errors so a sink can
+    never break the negotiation. Used by _step (FRONT milestones) and by the
+    provider release gate (Hospital B/C release-approval events)."""
     for sink in _NARRATION_SINKS:
         try:
             sink(payload)
         except Exception:
             pass
+
+
+# Provider-side held legs awaiting a doctor's release approval (tap 2), keyed by
+# proposal_id. Shared module-global (Bureau is one process). Each entry carries
+# what resume_release_decision needs to answer the FRONT.
+PENDING_RELEASES: dict[str, dict] = {}
+
 
 
 # ---------------------------------------------------------------------------
@@ -166,11 +179,7 @@ async def _step(ctx: Context, neg: dict, state: NegotiationState, detail: str,
         "req_id": req_id,
         "source": neg.get("source", "chat"),
     }
-    for sink in _NARRATION_SINKS:
-        try:
-            sink(payload)
-        except Exception:
-            pass
+    _publish_event(payload)
 
 
 # ---------------------------------------------------------------------------
@@ -786,6 +795,63 @@ def attach_front_handlers(front):
 # SURPLUS facilities (Hospital B, C) — offer + accept/reject
 # ---------------------------------------------------------------------------
 
+async def _send_leg_accept(ctx: Context, facility: str, front: str, request_id: str,
+                           pid: str, item: str, quantity: int, to_facility: str,
+                           leg_index: int = 0, leg_count: int = 1) -> None:
+    """Send a TransferAccept for one leg back to the FRONT (shared by the
+    auto-approve path and the resumed-after-doctor-approval path)."""
+    ctx.logger.info(f"[{facility}] Accepting leg {leg_index + 1}/{leg_count}: "
+                    f"{quantity} {item} -> {to_facility}.")
+    ctx.logger.info(
+        "[FETCH] action=send_transfer_accept from=%s to=%s state=supply_request_accepted "
+        "item=%s quantity=%d pid=%s req_id=%s",
+        facility, to_facility, item, quantity, pid, request_id,
+    )
+    await ctx.send(front, TransferAccept(request_id=request_id, proposal_id=pid,
+                                         accepted_by=facility))
+
+
+async def resume_release_decision(ctx: Context, pid: str, decision: str) -> None:
+    """Tap 2: resume a held transfer leg after the provider's doctor decides.
+
+    decision is "approve", "deny", or "timeout". Idempotent — the held leg is
+    popped on the first call, so a double-fire (UI tap + watchdog) is a no-op.
+    """
+    pending = PENDING_RELEASES.pop(pid, None)
+    if not pending:
+        return
+    facility = pending["facility"]
+    front = pending["front"]
+    if decision == "approve":
+        inv = get_inventory(facility, pending["item"])
+        if inv.spare_capacity >= pending["quantity"]:
+            await _send_leg_accept(ctx, facility, front, pending["request_id"], pid,
+                                   pending["item"], pending["quantity"], pending["to_facility"],
+                                   pending["leg_index"], pending["leg_count"])
+            _publish_event({"state": "release_approved", "facility": facility,
+                            "req_id": pending["request_id"], "pid": pid,
+                            "detail": f"{facility} approved release of "
+                                      f"{pending['quantity']} {pending['item']}.",
+                            "source": "provider_gate", "final": False})
+        else:
+            ctx.logger.info(f"[{facility}] Release approved but spare dropped to "
+                            f"{inv.spare_capacity}; rejecting leg {pid}.")
+            await ctx.send(front, TransferReject(
+                request_id=pending["request_id"], proposal_id=pid, rejected_by=facility,
+                reason=f"only {inv.spare_capacity} spare at release"))
+    else:  # deny / timeout
+        reason = ("release window timed out" if decision == "timeout"
+                  else "provider doctor denied release")
+        ctx.logger.info(f"[{facility}] Release {decision} for leg {pid}: {reason}.")
+        await ctx.send(front, TransferReject(
+            request_id=pending["request_id"], proposal_id=pid, rejected_by=facility,
+            reason=reason))
+        _publish_event({"state": "release_denied", "facility": facility,
+                        "req_id": pending["request_id"], "pid": pid,
+                        "detail": f"{facility} {decision}: {reason}.",
+                        "source": "provider_gate", "final": False})
+
+
 def attach_hospital_handlers(agent, facility: str):
     """Wire a surplus facility's negotiation handlers."""
 
@@ -857,7 +923,39 @@ def attach_hospital_handlers(agent, facility: str):
                 rejected_by=facility, reason="forced reject (demo)"))
             return
 
-        # Per-facility admin release gate (seam 4 — auto-approve by default).
+        # Reject up front if we simply do not have the spare — no human needed.
+        inv = get_inventory(facility, msg.item)
+        if inv.spare_capacity < msg.quantity:
+            ctx.logger.info(f"[{facility}] Rejecting leg {msg.proposal_id}: only "
+                            f"{inv.spare_capacity} spare, asked for {msg.quantity}.")
+            await ctx.send(sender, TransferReject(request_id=msg.request_id,
+                                                  proposal_id=msg.proposal_id, rejected_by=facility,
+                                                  reason=f"only {inv.spare_capacity} spare"))
+            return
+
+        # Two-tap handshake (tap 2): hold the leg and wait for THIS facility's
+        # doctor to approve the release. The UI texts the provider's doctor on the
+        # release_pending event; the tapped link is drained by release_poll below.
+        if PROVIDER_APPROVAL:
+            PENDING_RELEASES[msg.proposal_id] = {
+                "request_id": msg.request_id, "proposal_id": msg.proposal_id,
+                "facility": facility, "item": msg.item, "quantity": msg.quantity,
+                "to_facility": msg.to_facility, "leg_index": msg.leg_index,
+                "leg_count": msg.leg_count, "front": sender,
+                "deadline": time.monotonic() + RELEASE_TIMEOUT_S,
+            }
+            detail = (f"{facility}: approve releasing {msg.quantity} {msg.item} to "
+                      f"{msg.to_facility}? (leg {msg.leg_index + 1}/{msg.leg_count})")
+            ctx.logger.info(f"[{facility}] Release AWAITING provider-doctor approval "
+                            f"for leg {msg.proposal_id} ({msg.quantity} {msg.item}).")
+            _publish_event({
+                "state": "release_pending", "facility": facility,
+                "req_id": msg.request_id, "pid": msg.proposal_id,
+                "detail": detail, "source": "provider_gate", "final": False,
+            })
+            return
+
+        # Auto-approve path (handshake disabled): legacy facility-admin seam.
         if not approve_release(facility, msg.item, msg.quantity):
             ctx.logger.info(f"[{facility}] Release denied by facility admin for leg {msg.proposal_id}.")
             await ctx.send(sender, TransferReject(
@@ -865,27 +963,30 @@ def attach_hospital_handlers(agent, facility: str):
                 rejected_by=facility, reason="facility admin denied release"))
             return
 
-        inv = get_inventory(facility, msg.item)
-        if inv.spare_capacity >= msg.quantity:
-            ctx.logger.info(f"[{facility}] Accepting leg {msg.leg_index + 1}/{msg.leg_count}: "
-                            f"{msg.quantity} {msg.item} -> {msg.to_facility}.")
-            ctx.logger.info(
-                "[FETCH] action=send_transfer_accept from=%s to=%s state=supply_request_accepted "
-                "item=%s quantity=%d pid=%s req_id=%s",
-                facility, msg.to_facility, msg.item, msg.quantity,
-                msg.proposal_id, msg.request_id,
-            )
-            _emit("leg_accepted",
-                  f"✅ {facility} accepts leg {msg.leg_index + 1}/{msg.leg_count}: "
-                  f"{msg.quantity} {msg.item} → {msg.to_facility}", msg.request_id)
-            await ctx.send(sender, TransferAccept(request_id=msg.request_id,
-                                                  proposal_id=msg.proposal_id, accepted_by=facility))
-        else:
-            ctx.logger.info(f"[{facility}] Rejecting leg {msg.proposal_id}: only "
-                            f"{inv.spare_capacity} spare, asked for {msg.quantity}.")
-            await ctx.send(sender, TransferReject(request_id=msg.request_id,
-                                                  proposal_id=msg.proposal_id, rejected_by=facility,
-                                                  reason=f"only {inv.spare_capacity} spare"))
+        await _send_leg_accept(ctx, facility, sender, msg.request_id, msg.proposal_id,
+                               msg.item, msg.quantity, msg.to_facility,
+                               msg.leg_index, msg.leg_count)
+
+    @agent.on_interval(period=1.0)
+    async def release_poll(ctx: Context):
+        """Tap-2 plumbing: drain this facility's release decisions (UI taps via
+        the Redis queue) and auto-deny any held leg past its deadline."""
+        if not PROVIDER_APPROVAL:
+            return
+        # Decisions tapped in the UI arrive on a per-facility Redis list.
+        try:
+            import dashboard_bus
+            dec = dashboard_bus.pop_release_decision(facility)
+            while dec:
+                await resume_release_decision(ctx, dec.get("pid"), dec.get("decision", "deny"))
+                dec = dashboard_bus.pop_release_decision(facility)
+        except Exception:
+            pass  # Redis / dashboard_bus unavailable (offline harness) — fine.
+        # Watchdog: auto-deny this facility's held legs that timed out.
+        nowt = time.monotonic()
+        for pid, p in list(PENDING_RELEASES.items()):
+            if p["facility"] == facility and nowt > p["deadline"]:
+                await resume_release_decision(ctx, pid, "timeout")
 
 
 def _maybe_exit(ctx: Context):

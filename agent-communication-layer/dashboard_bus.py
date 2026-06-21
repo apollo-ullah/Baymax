@@ -15,6 +15,7 @@ import os
 
 TRIGGER_LIST = "baymax:trigger"
 DECISION_LIST = "baymax:decision"
+RELEASE_DECISION_PREFIX = "baymax:release_decision:"
 NARRATION_CHANNEL = "baymax:narration"
 DEFAULT_REDIS_URL = "redis://localhost:6379"
 _SOCKET_TIMEOUT_S = float(os.getenv("BAYMAX_REDIS_TIMEOUT", "2.0"))
@@ -76,6 +77,33 @@ def pop_decision():
 
 
 NARRATION_LIST = "baymax:narration:log"   # persistent list — survives pubsub gaps
+
+
+def _release_key(facility: str) -> str:
+    """Per-facility release-decision list key (e.g. baymax:release_decision:Hospital B)."""
+    return f"{RELEASE_DECISION_PREFIX}{facility}"
+
+
+def push_release_decision(facility, pid, decision):
+    """RPUSH a provider-doctor release decision ({approve|deny}) for one leg.
+
+    Used by the UI when the provider's doctor taps the approve/deny link on the
+    second leg of the two-tap handshake. The provider agent (Hospital B/C) drains
+    its own key in an on_interval and resumes the held TransferProposal."""
+    payload = {"pid": pid, "decision": decision}
+    _redis().rpush(_release_key(facility), json.dumps(payload))
+    return payload
+
+
+def pop_release_decision(facility):
+    """LPOP one queued release decision for `facility`, or None."""
+    raw = _redis().lpop(_release_key(facility))
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except (ValueError, TypeError):
+        return None
 
 def publish_narration(payload: dict) -> None:
     """Publish one milestone. Writes to BOTH pubsub (real-time) and a Redis list
