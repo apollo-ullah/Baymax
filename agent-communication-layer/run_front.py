@@ -128,6 +128,16 @@ def build_agent():
     # the purchase via the same Payment Protocol (FET) to a supplier wallet.
     sp.register_order_settlement_hook(settle_order_via_payment_protocol)
 
+    # (4c) Optional observability: register the Arize/Phoenix trace emitter so the
+    # crisis -> inventory -> reasoning -> transfer/order -> outcome chain is traced.
+    # Opt-in via BAYMAX_ARIZE; fail-open. One-way hook — the core never imports arize.
+    try:
+        import arize_hook
+        if arize_hook.arize_enabled():
+            sp.register_trace_hook(arize_hook.emit_trace)
+    except Exception:
+        pass
+
     # (5) Dashboard bus: publish every milestone for the scan dashboard, and poll
     # for dashboard-triggered ("Scan & Negotiate") negotiations. reply_to=None ->
     # the core auto-approves the trade and stub-settles (simulated); the real FET

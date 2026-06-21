@@ -132,6 +132,31 @@ def register_narration_sink(fn) -> None:
     _NARRATION_SINK = fn
 
 
+# Observability hook (Arize/Phoenix). One-way, exactly like _SETTLEMENT_HOOK: the
+# core NEVER imports arize; run_front / run_dashboard_demo register an emitter at
+# deploy time (arize_hook.emit_trace). Off by default -> the offline harnesses and
+# the ASI:One/dashboard paths are unchanged and arize-free.
+_TRACE_HOOK = None
+
+
+def register_trace_hook(fn) -> None:
+    """Register an observability emitter fn(event_type: str, attrs: dict) -> None
+    (sync). Called once at deployment wiring time."""
+    global _TRACE_HOOK
+    _TRACE_HOOK = fn
+
+
+def _trace(event_type: str, **attrs) -> None:
+    """Fire the optional observability hook. No-op when unregistered (default).
+    Fail-soft — a tracing error must never break or slow the negotiation."""
+    if _TRACE_HOOK is None:
+        return
+    try:
+        _TRACE_HOOK(event_type, attrs)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Narration: log every step; if a negotiation has a `reply_to` (the ASI:One
 # chat sender, set by FRONT), also stream the milestone back as a ChatMessage.
@@ -224,6 +249,8 @@ async def start_negotiation(ctx: Context, item: str, *, requester: str = REQUEST
     await _step(ctx, neg, NegotiationState.SHORTFALL_DETECTED,
                 f"{requester} is short {need} {item} (on hand {inv.qty}, safety {inv.safety_threshold}).",
                 narrate=True)
+    _trace("inventory_low", req_id=req_id, hospital_id=requester, item=item,
+           current_qty=inv.qty, threshold=inv.safety_threshold, shortfall=need)
     req = SupplyRequest(request_id=req_id, requester=requester, item=item,
                         quantity_needed=need, urgency=Urgency.CRITICAL)
     await _step(ctx, neg, NegotiationState.REQUESTING,
@@ -303,6 +330,9 @@ async def start_crisis(ctx: Context, crisis_text: str, *, requester: str = REQUE
     await _emit(ctx, reply_to=reply_to, source=source, label="researched",
                 detail=f"Crisis type: {brief.crisis_type}. At-risk supplies: {at_risk_str}. "
                        f"{brief.rationale}")
+    _trace("crisis_research", crisis_type=brief.crisis_type, region=region,
+           hospital_id=requester, rationale=brief.rationale,
+           at_risk=[a.item for a in brief.at_risk])
 
     item = _select_crisis_item(brief, requester)
     if not item:
@@ -334,6 +364,8 @@ async def run_ingest(ctx: Context, *, region: str = "san_francisco",
     items = ", ".join(rec.priority_items) if rec.priority_items else "none"
     detail = (f"Forecast risk **{rec.risk_level}**. Priority items: {items}. "
               f"{rec.reasoning} Recommended action: {rec.recommended_action}")
+    _trace("forecast_signal", region=region, risk_level=rec.risk_level,
+           priority_items=rec.priority_items, recommended_action=rec.recommended_action)
     await _emit(ctx, reply_to=reply_to, source=source, label="ingested",
                 detail=detail, final=True)
 
@@ -364,6 +396,10 @@ async def _evaluate(ctx: Context, req_id: str):
                        views)
     neg["plan"] = plan
     await _step(ctx, neg, NegotiationState.EVALUATING, plan.rationale, narrate=True)
+    _trace("reasoning_decision", req_id=req_id, item=neg["item"],
+           recommended_quantity=neg["need"], actual_quantity=plan.total_covered,
+           rationale=plan.rationale,
+           legs=[(a.offerer, a.quantity) for a in plan.allocations])
 
     if not plan.allocations:
         # No inter-facility trade is possible — offer the external order instead
@@ -518,6 +554,9 @@ async def _order_path(ctx: Context, req_id: str):
         return
 
     neg["order"] = order
+    _trace("supplier_order", req_id=req_id, item=order.item, transfer_quantity=order.quantity,
+           vendor=order.vendor, total_price=order.total_price,
+           live_view_url=order.live_view_url, confirmation_ref=order.confirmation_ref)
     quote = (f", vendor quote {order.total_price} {order.currency}"
              if order.total_price else "")
     view = f" View: {order.live_view_url}" if order.live_view_url else ""
@@ -680,6 +719,10 @@ def _log_confirmed_transfers(neg: dict, accepted_legs: list[dict], settlement_re
             })
     except Exception:  # noqa: BLE001
         pass
+    _trace("decision_outcome", req_id=neg.get("req_id"), item=neg.get("item"),
+           recommended_quantity=neg.get("need"),
+           actual_quantity=sum(l.get("quantity", 0) for l in accepted_legs),
+           settlement_ref=settlement_ref, tx_id=tx_id, outcome="confirmed")
 
 
 async def _settle(ctx: Context, req_id: str):
@@ -700,6 +743,9 @@ async def _settle(ctx: Context, req_id: str):
     await _step(ctx, neg, NegotiationState.SETTLING,
                 f"Settling {len(accepted_legs)} accepted leg(s) for {covered}/{neg['need']} "
                 f"{neg['item']}.", narrate=True)
+    _trace("transfer_recommendation", req_id=req_id, item=neg["item"],
+           transfer_quantity=covered, recommended_quantity=neg["need"],
+           legs=[(l["offerer"], l["quantity"]) for l in accepted_legs])
     tx = await settle_transfer(ctx, req_id, _SettlementPlan(accepted_legs, covered, short))
 
     legs = "; ".join(f"{leg['quantity']} {neg['item']} from {leg['offerer']}"

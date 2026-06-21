@@ -72,7 +72,7 @@ Two surfaces, ONE engine (dashboard + ASI:One). Target end-to-end flow:
 - ✅ Wave C DONE + GATE GREEN:
   - C1 backend (lead): `dashboard_bus.py` `baymax:crisis` + push/pop_crisis; `_poll_dashboard_crisis` in `run_front.py` + `run_dashboard_demo.py`. New `wave6_crisis_dashboard_e2e_check.py`.
   - C1 frontend (subagent, in-scope ✅): `ui/app.py` `POST /api/crisis` (RPUSH baymax:crisis + SET crisis:active) + `/api/ingest` alias + crisis in `/api/state`; LPUSH→RPUSH bus fix. `index.html` crisis panel + crisis card + "Ingest Data" relabel.
-  - C2 (Arize, P1): DEFERRED (P0 focus) — documented follow-up.
+  - C2 (Arize, P1): ✅ DONE (added after P0 commit, on request) — one-way `register_trace_hook` in baymax_agents (core never imports arize); `arize_hook.py` emitter (JSON always + OTel/Phoenix when avail, fail-open, opt-in `BAYMAX_ARIZE=1`); 7 `_trace` sites (crisis_research/inventory_low/reasoning_decision/transfer_recommendation/supplier_order/forecast_signal/decision_outcome); trace_schema + trace_store fixes; new `check_arize_trace.py`. Gate: C2 check ✅ + full regression ✅ (trace no-op when unregistered); arize/traces gitignored.
   - Gate: wave6 ✅ | wave5 ✅ | wave2 ✅ | wave3 ✅ | selftest ✅ | ui/app.py compiles ✅.
 - ✅ Wave D DONE + FINAL GATE GREEN:
   - D1 ✅ (secret untracked+gitignored, done first).

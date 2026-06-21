@@ -125,12 +125,22 @@ deterministic mocks — this is the demo's "runs clean three times" backup.
 | `BAYMAX_INGEST=1` | live forecast ingest via the WHO fetcher (else mock recommendation). |
 | `BAYMAX_CLAUDE_RANKING=1` | Claude offer ranking (else nearest-first greedy). |
 | `BAYMAX_BROWSERBASE=1` | live external supplier order (else deterministic mock). |
+| `BAYMAX_ARIZE=1` | register the Arize/Phoenix trace emitter in the runners (else no tracing). Pair with `PHOENIX_COLLECTOR_ENDPOINT` to export spans; JSON trace artifacts always land in `arize/traces/` (gitignored). |
 | `UI_PORT` (default 5001) | dashboard Flask port. `BAYMAX_AGENT_PYTHON` overrides the Bureau interpreter. |
+
+### Observability (Arize / Phoenix)
+Tracing is wired through a one-way hook (`baymax_agents.register_trace_hook`) so the
+core never imports `arize`. Turn it on by launching a runner with `BAYMAX_ARIZE=1`
+(optionally `PHOENIX_COLLECTOR_ENDPOINT=http://localhost:6006` for a live Phoenix).
+Each negotiation then emits the chain — `crisis_research → inventory_low →
+reasoning_decision → transfer_recommendation`/`supplier_order → decision_outcome` —
+with a shared `req_id` attribute per lifecycle. Verify offline:
+`agent-communication-layer$ ../adyan-agent-communication-layer/.venv/bin/python check_arize_trace.py`.
 
 ---
 
 ## Known follow-ups (P1 / deferred, not blocking the demos)
-- **Arize tracing (C2):** wire crisis/ingest/supplier spans via a one-way `register_trace_hook` (mirrors `register_settlement_hook`). Schema + exporter already exist; not yet called from the live path.
+- **Arize tracing (C2): DONE** — one-way `register_trace_hook` emits the full crisis→outcome chain (opt-in via `BAYMAX_ARIZE=1`). Future polish: true parent/child span nesting (currently correlated by a shared `req_id` attribute).
 - **Dashboard consolidation:** `ui/` (Flask) is canonical and carries the crisis prompt; the FastAPI `scan_dashboard.py` still boots on :8079 when spawned (orphaned, harmless). Fold its camera/corridor polish into `ui/` and retire the duplicate.
 - **Vision writers:** reconcile the camera→Redis writers + `reserve`/`status` schema (4 writers, 3 status vocabularies).
 - **Secret history:** the leaked `baymax_hello` testnet keys were untracked + gitignored; a `git filter-repo` history scrub + force-push is optional (testnet-only, dead agent).

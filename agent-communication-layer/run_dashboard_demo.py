@@ -51,6 +51,15 @@ def build_bureau():
     # Wire the narration sink so each milestone reaches the dashboard SSE.
     sp.register_narration_sink(dashboard_bus.publish_narration)
 
+    # Optional observability: register the Arize/Phoenix trace emitter (opt-in via
+    # BAYMAX_ARIZE; fail-open). One-way hook — the core never imports arize.
+    try:
+        import arize_hook
+        if arize_hook.arize_enabled():
+            sp.register_trace_hook(arize_hook.emit_trace)
+    except Exception:
+        pass
+
     @front.on_interval(period=1.0)
     async def _poll_dashboard_trigger(ctx):
         # Don't start a dashboard negotiation while a chat-driven one
