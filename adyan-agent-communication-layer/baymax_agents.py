@@ -93,6 +93,9 @@ _NARRATE_STATES = frozenset({
     NegotiationState.RE_PLANNING,
     NegotiationState.FAILED,
     NegotiationState.CONFIRMED,
+    NegotiationState.AWAITING_APPROVAL,
+    NegotiationState.ORDERING,
+    NegotiationState.ORDERED,
 })
 # Bounded re-plan: how many times we try to re-home a dropped (rejected) leg
 # before giving up and settling what was accepted. Prevents infinite re-propose.

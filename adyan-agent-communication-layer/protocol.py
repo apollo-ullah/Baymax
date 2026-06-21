@@ -91,6 +91,10 @@ class NegotiationState(str, Enum):
     SETTLING = "settling"
     CONFIRMED = "confirmed"
     FAILED = "failed"          # terminal: no/insufficient offers (extension)
+    # --- Wave 3: admin approval gate + external supplier order ---------------
+    AWAITING_APPROVAL = "awaiting_approval"  # halted for the chat admin's decision
+    ORDERING = "ordering"                    # placing an external supplier order
+    ORDERED = "ordered"                      # terminal: external order settled
 
 
 class Urgency(str, Enum):
