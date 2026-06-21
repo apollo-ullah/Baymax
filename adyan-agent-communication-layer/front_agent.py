@@ -58,7 +58,10 @@ from uagents import Context
 from baymax_agents import (
     NEGOTIATIONS,
     attach_front_handlers,
+    find_awaiting_approval,
+    resume_after_admin_decision,
     start_negotiation,
+    start_order,
 )
 
 # ---------------------------------------------------------------------------
@@ -111,6 +114,7 @@ _GREETING_RE = re.compile(
 _MILESTONE_ECHO_RE = re.compile(
     r"^\s*\*\*(?:shortfall_detected|requesting|collecting_offers|evaluating|"
     r"proposing|settling|confirmed|failed|re_planning|idle|"
+    r"awaiting_approval|ordering|ordered|"
     r"payment_confirmed|payment_failed)\*\*",
     re.IGNORECASE,
 )
@@ -131,6 +135,51 @@ _REQUEST_CUE_RE = re.compile(
     r"shortage|shortfall|restock|cover|we'?re short|is short)\b",
     re.IGNORECASE,
 )
+
+# Explicit "place an external order" phrasing (proactive restock / plan-ahead),
+# distinct from a shortfall request. Checked before the request-cue gate.
+_ORDER_CUE_RE = re.compile(
+    r"\b(order|buy|purchase|procure)\b", re.IGNORECASE,
+)
+
+# Admin-decision keyword groups (for parse_decision at the AWAITING_APPROVAL gate).
+_DECISION_APPROVE_RE = re.compile(
+    r"\b(approve|approved|yes|confirm|go ahead|do it|trade|accept|proceed|ok|okay)\b",
+    re.IGNORECASE,
+)
+_DECISION_ORDER_RE = re.compile(
+    r"\b(order|buy|purchase|procure|supplier|external|externally)\b", re.IGNORECASE,
+)
+_DECISION_REJECT_RE = re.compile(
+    r"\b(reject|cancel|no|nope|stop|abort|deny|decline)\b", re.IGNORECASE,
+)
+
+_DECISION_HELP = (
+    "I didn't catch your decision. Reply with one of:\n"
+    "  • `approve` — authorize the inter-facility trade\n"
+    "  • `order`  — purchase from an external supplier instead\n"
+    "  • `reject` — cancel"
+)
+
+
+def parse_decision(text: str) -> str:
+    """Classify a chat reply at the AWAITING_APPROVAL gate.
+
+    Returns "approve" | "order" | "reject" | "unclear". Requires EXACTLY one
+    signal group to fire, so an echo of our prompt (which names all three) is
+    "unclear" and re-prompts rather than triggering a wrong action."""
+    t = text or ""
+    has_approve = bool(_DECISION_APPROVE_RE.search(t))
+    has_order = bool(_DECISION_ORDER_RE.search(t))
+    has_reject = bool(_DECISION_REJECT_RE.search(t))
+    if (has_approve + has_order + has_reject) != 1:
+        return "unclear"
+    if has_order:
+        return "order"
+    if has_reject:
+        return "reject"
+    return "approve"
+
 
 # Distinctive markers of an ASI:One LLM recap/echo — never how a user types a
 # one-line intent. The wrapping ASI:One agent parrots our narration back as long,
@@ -298,6 +347,19 @@ def parse_intent(text: str) -> dict:
     if item is None:
         return {"kind": "unknown"}
 
+    # Explicit external-order intent ("order 500 saline") — proactive restock,
+    # reachable even with no shortfall. Checked before the request-cue gate
+    # because "order" is not a shortfall cue.
+    if _ORDER_CUE_RE.search(text):
+        requester = _match_facility(text) or REQUESTER
+        item_aliases = tuple(syn for syn, canon in _ITEM_SYNONYMS.items() if canon == item)
+        return {
+            "kind": "order",
+            "item": item,
+            "requester": requester,
+            "quantity": _match_quantity(text, item_aliases),
+        }
+
     # Item mentioned but no request phrasing — likely ASI:One echoing our recap.
     if not _REQUEST_CUE_RE.search(text):
         return {"kind": "ignored", "reason": "no_request_cue"}
@@ -397,6 +459,23 @@ async def on_intent(ctx: Context, sender: str, text: str) -> None:
     and end the session — no negotiation is started. Echo/meta messages from
     ASI:One are silently ignored so narration cannot re-trigger a new deal.
     """
+    # --- AWAITING_APPROVAL pre-filter (must run BEFORE intent parsing / cooldown /
+    # duplicate-block, or the decision reply would be eaten as a non-intent). ---
+    pending_req_id = find_awaiting_approval(sender)
+    if pending_req_id is not None:
+        # Ignore our own narration echoed back by ASI:One while we wait.
+        if (_MILESTONE_ECHO_RE.match(text) or _ASI1_META_RE.search(text)
+                or _looks_like_echo_chatter(text)):
+            ctx.logger.debug(f"awaiting-approval: ignoring echo from {sender}")
+            return
+        decision = parse_decision(text)
+        ctx.logger.info(f"admin decision from {sender}: {text!r} -> {decision}")
+        if decision == "unclear":
+            await ctx.send(sender, create_text_chat(_DECISION_HELP, end_session=False))
+            return
+        await resume_after_admin_decision(ctx, pending_req_id, decision)
+        return
+
     parsed = _PARSER(text)
     kind = parsed.get("kind")
     ctx.logger.info(f"on_intent from {sender}: {text!r} -> {parsed}")
@@ -419,33 +498,36 @@ async def on_intent(ctx: Context, sender: str, text: str) -> None:
         await ctx.send(sender, create_text_chat(_CAPABILITIES, end_session=False))
         return
 
-    if kind != "request":
-        # Unparseable: help the user with concrete example phrasings, then end.
+    if kind not in ("request", "order"):
         await ctx.send(sender, create_text_chat(_UNPARSEABLE_HELP, end_session=True))
         return
 
-    # Cooldown: suppress the post-intent ASI:One echo storm from the same sender
-    # (the LLM re-sends recaps of our narration for many seconds after a real ask).
+    # Cooldown: suppress the post-intent ASI:One echo storm from the same sender.
     last = _LAST_ACCEPTED_INTENT.get(sender)
     if last is not None and (time.monotonic() - last) < _INTENT_COOLDOWN_S:
         ctx.logger.info(
             f"intent cooldown ({_INTENT_COOLDOWN_S:.0f}s) active for {sender} — "
-            f"ignoring likely echo"
-        )
+            f"ignoring likely echo")
         return
     _LAST_ACCEPTED_INTENT[sender] = time.monotonic()
 
     item = parsed["item"]
     requester = parsed.get("requester") or REQUESTER
-    quantity_needed = parsed.get("quantity_needed")
 
+    if kind == "order":
+        quantity = parsed.get("quantity")
+        qty_note = f" {quantity}" if quantity else ""
+        await ctx.send(sender, create_text_chat(
+            f"Understood — placing an external supplier order for{qty_note} {item} "
+            f"({requester}). I'll narrate each step.", end_session=False))
+        await start_order(ctx, item, quantity, requester=requester, reply_to=sender)
+        return
+
+    quantity_needed = parsed.get("quantity_needed")
     qty_note = f" ({quantity_needed} units)" if quantity_needed else ""
     await ctx.send(sender, create_text_chat(
         f"Understood — checking the network for {item} to cover {requester}{qty_note}. "
         f"I'll narrate each step.", end_session=False))
-
-    # Kick off the negotiation. reply_to=sender => automatic narration + the
-    # terminal milestone ends the chat session.
     await start_negotiation(
         ctx, item,
         requester=requester,
