@@ -1,4 +1,4 @@
-"""agent_base.py — shared building blocks for the Stockpile hospital agents.
+"""agent_base.py — shared building blocks for the Baymax hospital agents.
 
 Provides, for every Wave 1 stream:
   * the Python 3.14 event-loop workaround (uagents 0.25.2 needs a current loop
@@ -63,7 +63,7 @@ from protocol import (
 _REQUESTED_NETWORK = os.getenv("FETCH_NETWORK", "testnet").strip().lower()
 if _REQUESTED_NETWORK not in ("", "testnet"):
     raise RuntimeError(
-        f"Stockpile is TESTNET ONLY — refusing FETCH_NETWORK={_REQUESTED_NETWORK!r}. "
+        f"Baymax is TESTNET ONLY — refusing FETCH_NETWORK={_REQUESTED_NETWORK!r}. "
         f"Unset it or set FETCH_NETWORK=testnet."
     )
 FET_NETWORK = "testnet"
@@ -78,15 +78,15 @@ README_PATH = os.path.join(os.path.dirname(__file__), "README.md")
 REQUESTER = "Hospital A"
 
 FACILITIES = {
-    "Hospital A": {"agent_name": "stockpile_front",      "port": 8001, "seed_env": "STOCKPILE_FRONT_SEED",  "role": "requester"},
-    "Hospital B": {"agent_name": "stockpile_hospital_b", "port": 8002, "seed_env": "STOCKPILE_HOSP_B_SEED", "role": "surplus"},
-    "Hospital C": {"agent_name": "stockpile_hospital_c", "port": 8003, "seed_env": "STOCKPILE_HOSP_C_SEED", "role": "surplus"},
+    "Hospital A": {"agent_name": "baymax_front",      "port": 8001, "seed_env": "BAYMAX_FRONT_SEED",  "role": "requester"},
+    "Hospital B": {"agent_name": "baymax_hospital_b", "port": 8002, "seed_env": "BAYMAX_HOSP_B_SEED", "role": "surplus"},
+    "Hospital C": {"agent_name": "baymax_hospital_c", "port": 8003, "seed_env": "BAYMAX_HOSP_C_SEED", "role": "surplus"},
 }
 
 # Deterministic dev fallback seeds so the Bureau demo runs reproducibly with no
 # .env. Real deployments MUST set the *_SEED env vars (see .env.example) — these
 # fallbacks are public, hence only for local testing, never for Agentverse.
-_DEV_SEEDS = {f: f"stockpile-dev-seed-{cfg['agent_name']}" for f, cfg in FACILITIES.items()}
+_DEV_SEEDS = {f: f"baymax-dev-seed-{cfg['agent_name']}" for f, cfg in FACILITIES.items()}
 
 SURPLUS_FACILITIES = [f for f, cfg in FACILITIES.items() if cfg["role"] == "surplus"]
 
@@ -187,6 +187,9 @@ def build_hospital_agent(
         "network": FET_NETWORK,
     }
     if mailbox:
+        api_key = os.getenv("AGENTVERSE_API_KEY", "")
+        if api_key:
+            kwargs["agentverse"] = f"{api_key}@agentverse.ai"
         kwargs["mailbox"] = True
         kwargs["publish_agent_details"] = True if publish_details is None else publish_details
         kwargs["readme_path"] = README_PATH

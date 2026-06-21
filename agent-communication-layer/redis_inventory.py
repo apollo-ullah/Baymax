@@ -4,7 +4,7 @@
 never blocked on Redis. This module is the live backend that the mock was a
 placeholder for: it reads the teammates' Redis (owned by `tracks/redis`) and
 returns the exact same `InventoryState` shape, so the negotiation core is
-unchanged. `interfaces.get_inventory()` delegates here when STOCKPILE_REDIS=1 and
+unchanged. `interfaces.get_inventory()` delegates here when BAYMAX_REDIS=1 and
 falls back to the mock on ANY failure (contract FR1: the seam must never hang).
 
 Bridge pattern mirrors `tracks/fetch/shared/redis_io.py`: the Redis track owns the
@@ -49,9 +49,9 @@ import schema  # noqa: E402  (tracks/redis/src/schema.py — key-name helpers on
 from interfaces import InventoryState  # noqa: E402
 
 DEFAULT_REDIS_URL = "redis://localhost:6379"
-_SOCKET_TIMEOUT_S = float(os.getenv("STOCKPILE_REDIS_TIMEOUT", "2.0"))
+_SOCKET_TIMEOUT_S = float(os.getenv("BAYMAX_REDIS_TIMEOUT", "2.0"))
 
-# Stockpile uses display names ("Hospital A"); the Redis track keys by id
+# Baymax uses display names ("Hospital A"); the Redis track keys by id
 # ("hospital_a"). Map by the trailing letter so "Hospital B" -> "hospital_b".
 _HOSPITAL_IDS = {
     "Hospital A": "hospital_a",
@@ -65,7 +65,7 @@ _client_cache = None
 def redis_enabled() -> bool:
     """True when the live Redis backend should be used (set by run_front.py /
     the live runners). Default off so the offline harnesses need no Redis."""
-    return os.getenv("STOCKPILE_REDIS", "").lower() in ("1", "true", "yes")
+    return os.getenv("BAYMAX_REDIS", "").lower() in ("1", "true", "yes")
 
 
 def _client():
@@ -94,7 +94,7 @@ def _hid(hospital: str) -> str:
 
 def _canon_field(item: str, fields) -> Optional[str]:
     """Match `item` against the actual hash field names case-insensitively, so
-    Stockpile's "IV fluids" / "saline" resolve to Redis "IV Fluids" / "Saline"."""
+    Baymax's "IV fluids" / "saline" resolve to Redis "IV Fluids" / "Saline"."""
     target = item.strip().lower()
     for f in fields:
         if f.strip().lower() == target:
@@ -156,9 +156,14 @@ def redis_get_inventory(hospital: str, item: str) -> InventoryState:
 
     surplus_raw = client.hgetall(schema.surplus_key(hid))
     surplus_field = _canon_field(item, surplus_raw.keys())
-    if surplus_field is not None:
-        surplus = int(float(surplus_raw[surplus_field]))
-        # spare_capacity = qty - safety_threshold, so this yields exactly surplus.
+    surplus = int(float(surplus_raw[surplus_field])) if surplus_field is not None else 0
+    # Camera workers store a fixed `reserve` (minimum safe stock). When present,
+    # use it as safety_threshold so a low shelf count (qty < reserve) still reads
+    # as a shortfall. Without it, fall back to qty-surplus (legacy) or 50% capacity.
+    reserve = int(record.get("reserve", 0) or 0)
+    if reserve > 0:
+        safety_threshold = reserve
+    elif surplus_field is not None:
         safety_threshold = max(0, qty - surplus)
     else:
         # No declared surplus: keep a sane reserve so spare_capacity is 0-ish and

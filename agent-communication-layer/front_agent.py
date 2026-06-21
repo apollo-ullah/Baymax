@@ -1,4 +1,4 @@
-"""front_agent.py — STOCKPILE's ASI:One-facing entrypoint (Hospital A / FRONT).
+"""front_agent.py — Baymax's ASI:One-facing entrypoint (Hospital A / FRONT).
 
 This is the standalone runnable agent that turns a natural-language chat intent
 from ASI:One into a full inter-facility supply negotiation and streams every
@@ -8,7 +8,7 @@ Wiring (all of it imported from the frozen Wave 0 contract — nothing redefined
   * agent_base.build_hospital_agent("Hospital A", mailbox=True)
         the requester agent, reachable through Agentverse/ASI:One via a Mailbox
         (no public inbound endpoint needed). network is pinned to testnet.
-  * stockpile_agents.attach_front_handlers(front)
+  * baymax_agents.attach_front_handlers(front)
         the negotiation message handlers (SupplyOffer / TransferAccept /
         TransferReject + the offer-timeout tick) that orchestrate the deal.
   * agent_base.build_chat_protocol(on_intent)
@@ -23,14 +23,19 @@ The flow:
         ChatMessage automatically (because reply_to is set), ending the chat
         session on the terminal (CONFIRMED / FAILED / IDLE) step.
 
+Wave 3 admin gate: when the negotiation halts at AWAITING_APPROVAL, the user
+replies with "approve [req_id]", "order [n] [item]", or "reject [req_id]".
+parse_decision() detects these replies and routes them to
+resume_after_admin_decision() or start_order() instead of launching a new deal.
+
 No API key is required: parse_intent() is a deterministic keyword/regex parser.
 A clearly-marked seam (parse_intent_llm) shows how an ASI:One LLM parser would
-drop in behind the SAME signature when STOCKPILE_ASI1_API_KEY is set.
+drop in behind the SAME signature when BAYMAX_ASI1_API_KEY is set.
 
 Run modes:
   * Live ASI:One:   `python front_agent.py`   (Mailbox; see __main__ banner /
                     the manual steps at the bottom of this file).
-  * Local self-test: `STOCKPILE_SELFTEST=1 python front_agent.py`
+  * Local self-test: `BAYMAX_SELFTEST=1 python front_agent.py`
                     builds a 3-agent Bureau (A + surplus B + surplus C),
                     feeds a synthetic ChatMessage through the chat handler, and
                     confirms the negotiation completes + narrates — no Agentverse,
@@ -55,11 +60,14 @@ from agent_base import (
 )
 from uagents import Context
 
-from stockpile_agents import (
+from baymax_agents import (
     NEGOTIATIONS,
     attach_front_handlers,
+    resume_after_admin_decision,
     start_negotiation,
+    start_order,
 )
+from protocol import NegotiationState
 
 # ---------------------------------------------------------------------------
 # Known items + synonym map. The canonical items are the ones the inventory seam
@@ -111,6 +119,7 @@ _GREETING_RE = re.compile(
 _MILESTONE_ECHO_RE = re.compile(
     r"^\s*\*\*(?:shortfall_detected|requesting|collecting_offers|evaluating|"
     r"proposing|settling|confirmed|failed|re_planning|idle|"
+    r"awaiting_approval|ordering|ordered|"
     r"payment_confirmed|payment_failed)\*\*",
     re.IGNORECASE,
 )
@@ -161,11 +170,11 @@ def _looks_like_echo_chatter(text: str) -> bool:
 # Per-sender cooldown. After a real intent kicks off a negotiation, the ASI:One
 # LLM echoes it back many times within seconds; ignore further "requests" from the
 # same sender for this window so the echo storm cannot spawn duplicate deals.
-_INTENT_COOLDOWN_S = float(os.getenv("STOCKPILE_INTENT_COOLDOWN", "20"))
+_INTENT_COOLDOWN_S = float(os.getenv("BAYMAX_INTENT_COOLDOWN", "20"))
 _LAST_ACCEPTED_INTENT: dict[str, float] = {}
 
 _CAPABILITIES = (
-    "STOCKPILE — autonomous hospital supply negotiation.\n\n"
+    "Baymax — autonomous hospital supply negotiation.\n\n"
     "Tell me which facility is short on what, and I'll broadcast the need to the "
     "network, rank the offers, and settle a (possibly split) inter-facility "
     "transfer — narrating each step back to you.\n\n"
@@ -174,7 +183,11 @@ _CAPABILITIES = (
     "  • \"Hospital A is short on IV fluids\"\n"
     "  • \"we're short 200 saline\"\n"
     "  • \"need sutures at Hospital A\"\n"
-    "  • \"Hospital A needs 150 IV fluids\""
+    "  • \"Hospital A needs 150 IV fluids\"\n\n"
+    "When a negotiation halts for your approval, reply with:\n"
+    "  • **approve** [req_id] — execute the proposed transfer\n"
+    "  • **order** [qty] [item] — buy from an external supplier instead\n"
+    "  • **reject** [req_id] — cancel the negotiation"
 )
 
 _UNPARSEABLE_HELP = (
@@ -360,15 +373,63 @@ def parse_intent(text: str) -> dict:
 #       return data
 # ---------------------------------------------------------------------------
 
+# Admin-decision keywords — must match before parse_intent so "approve" / "reject"
+# never fall through to the "unknown" path.
+_DECISION_RE = re.compile(
+    r"^\s*(approve|reject)\b\s*([a-f0-9]{6,8})?\s*$",
+    re.IGNORECASE,
+)
+_ORDER_CMD_RE = re.compile(r"^\s*order\b", re.IGNORECASE)
+
+
+def parse_decision(text: str) -> dict:
+    """Parse an admin decision reply: approve/reject/order.
+
+    Returns one of:
+      {"kind": "decision", "decision": "approve"|"reject", "req_id": str|None}
+      {"kind": "order",    "item": str, "quantity": int|None, "requester": str}
+      {"kind": "none"}  -- not a decision; caller falls through to parse_intent
+    """
+    text = (text or "").strip()
+    if not text:
+        return {"kind": "none"}
+
+    m = _DECISION_RE.match(text)
+    if m:
+        return {
+            "kind": "decision",
+            "decision": m.group(1).lower(),
+            "req_id": m.group(2),
+        }
+
+    if _ORDER_CMD_RE.match(text):
+        tl = text.lower()
+        item = _match_item(tl)
+        if item:
+            item_aliases = tuple(syn for syn, canon in _ITEM_SYNONYMS.items() if canon == item)
+            qty = _match_quantity(text, item_aliases)
+            requester = _match_facility(text) or REQUESTER
+            return {"kind": "order", "item": item, "quantity": qty, "requester": requester}
+        # "order" keyword but no known item — treat as a bare order decision
+        req_id_m = re.search(r"\b([a-f0-9]{6,8})\b", text)
+        return {
+            "kind": "decision",
+            "decision": "order",
+            "req_id": req_id_m.group(1) if req_id_m else None,
+        }
+
+    return {"kind": "none"}
+
+
 def _resolve_parser():
     """Pick the active intent parser.
 
-    Returns the ASI:One LLM parser when STOCKPILE_ASI1_API_KEY is set AND the
+    Returns the ASI:One LLM parser when BAYMAX_ASI1_API_KEY is set AND the
     optional `openai` client is importable; otherwise the deterministic
     keyword/regex parse_intent(). Both share the exact same signature
     (str -> dict), so on_intent() never changes.
     """
-    if os.getenv("STOCKPILE_ASI1_API_KEY"):
+    if os.getenv("BAYMAX_ASI1_API_KEY"):
         try:
             from openai import OpenAI  # noqa: F401  (presence check only)
             # return parse_intent_llm   # ← enable once the seam above is uncommented
@@ -393,10 +454,54 @@ async def on_intent(ctx: Context, sender: str, text: str) -> None:
     with reply_to=sender so every NegotiationState milestone streams back to the
     ASI:One conversation automatically (and the final step ends the session).
 
+    Wave 3 admin gate: if a negotiation is AWAITING_APPROVAL, the user's "approve",
+    "order", or "reject" reply is routed to resume_after_admin_decision() before
+    normal intent parsing, so these keywords never accidentally start a new deal.
+
     For greetings/help or unparseable input we reply directly with a ChatMessage
     and end the session — no negotiation is started. Echo/meta messages from
     ASI:One are silently ignored so narration cannot re-trigger a new deal.
     """
+    # --- Wave 3: admin decision pre-filter ------------------------------------
+    # Check BEFORE echo/milestone guards so "approve" / "reject" always route
+    # even when they also contain item names (e.g. "approve abc1 — IV fluids OK").
+    dec = parse_decision(text)
+    if dec["kind"] == "decision":
+        req_id = dec.get("req_id")
+        # Find the right negotiation: explicit req_id or the one waiting for this sender.
+        if not req_id:
+            for rid, neg in NEGOTIATIONS.items():
+                if (neg.get("state") == NegotiationState.AWAITING_APPROVAL
+                        and not neg.get("done")
+                        and (neg.get("reply_to") == sender or neg.get("reply_to") is None)):
+                    req_id = rid
+                    break
+        if req_id and req_id in NEGOTIATIONS:
+            ctx.logger.info(
+                "on_intent: routing admin decision %r for req_id=%s from %s",
+                dec["decision"], req_id, sender,
+            )
+            await resume_after_admin_decision(ctx, req_id, dec["decision"])
+            return
+        ctx.logger.debug(
+            "on_intent: decision %r from %s but no matching negotiation awaiting approval",
+            dec["decision"], sender,
+        )
+        return
+
+    if dec["kind"] == "order":
+        ctx.logger.info(
+            "on_intent: proactive order for %r qty=%s from %s",
+            dec["item"], dec.get("quantity"), sender,
+        )
+        await start_order(
+            ctx, dec["item"], dec.get("quantity"),
+            requester=dec.get("requester") or REQUESTER,
+            reply_to=sender,
+        )
+        return
+
+    # --- Normal intent path ---------------------------------------------------
     parsed = _PARSER(text)
     kind = parsed.get("kind")
     ctx.logger.info(f"on_intent from {sender}: {text!r} -> {parsed}")
@@ -479,7 +584,7 @@ def build_front_agent():
 # ASI:One, Agentverse, or any network. Builds a 3-agent Bureau (FRONT + two
 # surplus facilities), feeds a synthetic ChatMessage through the chat handler,
 # and captures the narrated ChatMessages the FRONT would have streamed to a
-# real chat sender. Run with:  STOCKPILE_SELFTEST=1 python front_agent.py
+# real chat sender. Run with:  BAYMAX_SELFTEST=1 python front_agent.py
 # ---------------------------------------------------------------------------
 
 def run_selftest():
@@ -495,16 +600,18 @@ def run_selftest():
 
     On startup, FRONT feeds a synthetic intent through the SAME on_intent() the
     live agent uses, so the whole chat -> parse -> negotiate -> narrate loop is
-    exercised. The process self-exits at the terminal milestone
-    (STOCKPILE_EXIT_WHEN_DONE).
+    exercised. At the AWAITING_APPROVAL gate the collector auto-sends "approve"
+    back to FRONT so the self-test completes without human input.
+    The process self-exits at the terminal milestone (BAYMAX_EXIT_WHEN_DONE).
     """
+    import asyncio as _asyncio
     from uagents import Agent, Bureau
     from agent_base import FET_NETWORK
-    from stockpile_agents import attach_hospital_handlers
+    from baymax_agents import attach_hospital_handlers
 
     # Self-terminate once the negotiation reaches a terminal (CONFIRMED/FAILED).
-    os.environ.setdefault("STOCKPILE_EXIT_WHEN_DONE", "1")
-    intent_text = os.getenv("STOCKPILE_SELFTEST_INTENT",
+    os.environ.setdefault("BAYMAX_EXIT_WHEN_DONE", "1")
+    intent_text = os.getenv("BAYMAX_SELFTEST_INTENT",
                             "Hospital A is short on IV fluids")
 
     # --- The three negotiation agents (Bureau / in-process mode, NOT mailbox) -
@@ -521,8 +628,8 @@ def run_selftest():
 
     # --- The collector: stands in for the ASI:One chat user -------------------
     collector = Agent(
-        name="stockpile_selftest_collector",
-        seed="stockpile-selftest-collector-seed",
+        name="baymax_selftest_collector",
+        seed="baymax-selftest-collector-seed",
         port=8009,
         network=FET_NETWORK,
     )
@@ -531,6 +638,14 @@ def run_selftest():
     async def _collect(ctx: Context, sender: str, text: str) -> None:
         narrated.append(text)
         ctx.logger.info(f"[NARRATION #{len(narrated)}] {text}")
+        # Auto-approve the admin gate so the self-test can complete unattended.
+        if "awaiting_approval" in text.lower() or "Request ID:" in text:
+            import re as _re
+            m = _re.search(r"Request ID:\s*([a-f0-9]{6,8})", text)
+            req_id = m.group(1) if m else ""
+            ctx.logger.info(f"[self-test] auto-approving req_id={req_id}")
+            await ctx.send(sender, create_text_chat(
+                f"approve {req_id}".strip(), end_session=False))
 
     collector.include(build_chat_protocol(_collect), publish_manifest=True)
     collector_addr = collector.address
@@ -557,12 +672,12 @@ def run_selftest():
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    if os.getenv("STOCKPILE_SELFTEST", "").lower() in ("1", "true", "yes"):
+    if os.getenv("BAYMAX_SELFTEST", "").lower() in ("1", "true", "yes"):
         run_selftest()
     else:
         agent = build_front_agent()
         print("=" * 70)
-        print("STOCKPILE FRONT agent (Hospital A) — ASI:One entrypoint")
+        print("Baymax FRONT agent (Hospital A) — ASI:One entrypoint")
         print(f"  address : {agent.address}")
         print(f"  network : {os.getenv('FETCH_NETWORK', 'testnet')} (TESTNET ONLY)")
         print("-" * 70)

@@ -1,9 +1,9 @@
 """
-Stockpile Pipeline Dashboard — Flask UI.
+Baymax Pipeline Dashboard — Flask UI.
 
 Reads the live Redis state for every pipeline stage and serves a dashboard
-that auto-refreshes every 3 seconds. No uAgents need to be running; the UI
-reads Redis directly.
+that auto-refreshes every 3 seconds. Also manages the Baymax Bureau subprocess
+and bridges iMessage approval notifications.
 
 Endpoints:
     GET  /              dashboard HTML
@@ -11,6 +11,12 @@ Endpoints:
     GET  /image/latest  latest capture JPEG (or placeholder)
     POST /api/capture   run mock capture (--counts a=4,b=2) → Redis
     POST /api/refresh_who   re-run WHO fetch + Claude reasoning → Redis
+    POST /api/negotiate     push trigger to bureau (non-blocking)
+    POST /api/bureau/start  start/restart the bureau subprocess
+    GET  /api/narration     SSE stream of narration events
+    GET  /req/<rid>/approve  approve a pending transfer
+    GET  /req/<rid>/order    order externally
+    GET  /req/<rid>/reject   reject a pending transfer
 
 Run:
     python ui/app.py
@@ -24,11 +30,13 @@ import logging
 import os
 import subprocess
 import sys
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
-from flask import Flask, jsonify, render_template, send_file, request
+from flask import Flask, Response, jsonify, render_template, request, send_file
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
@@ -37,21 +45,110 @@ _REDIS_SRC = Path(__file__).resolve().parents[1] / "redis" / "src"
 if str(_REDIS_SRC) not in sys.path:
     sys.path.insert(0, str(_REDIS_SRC))
 
-# ── Bridge to who_agent fetcher ──────────────────────────────────────────────
+# ── Bridge to who_agent fetcher and fetch.approval ───────────────────────────
 _FETCH_ROOT = Path(__file__).resolve().parents[1]
 if str(_FETCH_ROOT) not in sys.path:
     sys.path.insert(0, str(_FETCH_ROOT))
 
-log = logging.getLogger("stockpile_ui")
+log = logging.getLogger("baymax_ui")
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 app = Flask(__name__)
 
+UI_PORT = int(os.getenv("UI_PORT", "5001"))
 REGION = os.getenv("FORECAST_REGION", "san_francisco")
 HARDWARE_DIR = Path(__file__).resolve().parents[1] / "hardware" / "camera connection"
 SYNC_SCRIPT = HARDWARE_DIR / "sync_to_redis.py"
 AGENT_DIR = Path(__file__).resolve().parents[1] / "agent-communication-layer"
 AGENT_VENV_PYTHON = AGENT_DIR / ".venv" / "bin" / "python"
+
+# ── Bureau subprocess ─────────────────────────────────────────────────────────
+_bureau_proc: subprocess.Popen | None = None
+
+
+def _ensure_bureau():
+    global _bureau_proc
+    if _bureau_proc and _bureau_proc.poll() is None:
+        return
+    env = {**os.environ,
+           "BAYMAX_REDIS": "1",
+           "BAYMAX_OFFER_TIMEOUT": "4.0",
+           "BAYMAX_SPARSE_NARRATION": "0",
+           "BAYMAX_DASHBOARD_PORT": "8079",  # avoid conflict with Flask
+           "REDIS_URL": os.getenv("REDIS_URL", "redis://localhost:6379")}
+    _bureau_proc = subprocess.Popen(
+        [str(AGENT_VENV_PYTHON), "run_dashboard_demo.py"],
+        cwd=str(AGENT_DIR), env=env,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    log.info("Bureau started (pid %s)", _bureau_proc.pid)
+
+
+# ── In-memory narration state ─────────────────────────────────────────────────
+_narration_log: list[dict] = []    # last 50 events
+_awaiting_approval: dict = {}      # req_id -> {"detail": str, "notified": bool}
+
+
+def _send_approval_imessage(req_id: str, detail: str):
+    base = os.getenv("APPROVAL_BASE_URL", f"http://localhost:{UI_PORT}").rstrip("/")
+    approve_url = f"{base}/req/{req_id}/approve"
+    order_url   = f"{base}/req/{req_id}/order"
+    reject_url  = f"{base}/req/{req_id}/reject"
+    msg = (
+        f"🏥 Baymax needs your approval.\n"
+        f"{detail[:220]}\n\n"
+        f"✅ Approve transfer: {approve_url}\n"
+        f"🛒 Order externally: {order_url}\n"
+        f"❌ Reject: {reject_url}"
+    )
+    try:
+        from fetch.approval.imessage_client import notify
+        notify("hospital_a", msg)
+        log.info("[imessage] sent approval request for %s", req_id)
+    except Exception as exc:
+        log.warning("[imessage] failed: %s", exc)
+
+
+def _narration_subscriber():
+    """Background thread: subscribe to baymax:narration pubsub and update state."""
+    while True:
+        try:
+            import redis as _redis_lib
+            url = os.getenv("REDIS_URL", "redis://localhost:6379")
+            r = _redis_lib.Redis.from_url(url, decode_responses=True,
+                                          socket_connect_timeout=2, socket_timeout=2)
+            pubsub = r.pubsub()
+            pubsub.subscribe("baymax:narration")
+            for message in pubsub.listen():
+                if message.get("type") != "message":
+                    continue
+                try:
+                    payload = json.loads(message["data"])
+                except (ValueError, TypeError):
+                    continue
+
+                # Append to log, cap at 50
+                _narration_log.append(payload)
+                if len(_narration_log) > 50:
+                    del _narration_log[:-50]
+
+                # Check for awaiting_approval
+                state = payload.get("state")
+                req_id = payload.get("req_id")
+                if state == "awaiting_approval" and req_id and req_id not in _awaiting_approval:
+                    detail = payload.get("detail", "")
+                    _awaiting_approval[req_id] = {"detail": detail, "notified": False}
+                    _send_approval_imessage(req_id, detail)
+                    _awaiting_approval[req_id]["notified"] = True
+
+        except Exception as exc:
+            log.warning("[narration_subscriber] error: %s — retrying in 2s", exc)
+            time.sleep(2)
+
+
+# Start subscriber thread on module load
+_subscriber_thread = threading.Thread(target=_narration_subscriber, daemon=True)
+_subscriber_thread.start()
 
 
 # ── Redis helpers ─────────────────────────────────────────────────────────────
@@ -72,6 +169,25 @@ def _safe_json(raw):
         return raw
 
 
+def _push_decision(req_id: str, decision: str):
+    try:
+        r = _redis()
+        r.lpush("baymax:decision", json.dumps({"req_id": req_id, "decision": decision}))
+        _awaiting_approval.pop(req_id, None)
+        log.info("[decision] pushed %s for req_id=%s", decision, req_id)
+    except Exception as exc:
+        log.warning("[decision] push failed: %s", exc)
+
+
+def _push_trigger(item: str, requester: str = "Hospital A", quantity: int | None = None):
+    try:
+        r = _redis()
+        r.lpush("baymax:trigger", json.dumps({"item": item, "requester": requester, "quantity": quantity}))
+        log.info("[trigger] pushed item=%s qty=%s", item, quantity)
+    except Exception as exc:
+        log.warning("[trigger] push failed: %s", exc)
+
+
 def get_state() -> dict:
     """Read every pipeline stage from Redis and return as a single dict."""
     state: dict = {
@@ -87,6 +203,9 @@ def get_state() -> dict:
         "vision_image_available": False,
         "transfers": [],
         "alerts": [],
+        "negotiation_log": _narration_log[-20:],
+        "awaiting_approval": list(_awaiting_approval.keys()),
+        "bureau_running": _bureau_proc is not None and _bureau_proc.poll() is None,
     }
 
     try:
@@ -148,6 +267,32 @@ def get_state() -> dict:
         pass
 
     return state
+
+
+# ── Approval page helper ──────────────────────────────────────────────────────
+
+def _approval_page(title: str, body: str) -> str:
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title}</title>
+<style>
+  body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+         background: #0f1117; color: #e2e8f0; display: flex; align-items: center;
+         justify-content: center; min-height: 100vh; margin: 0; padding: 24px; }}
+  .box {{ background: #1a1d27; border: 1px solid #2a2d3e; border-radius: 14px;
+          padding: 32px 28px; max-width: 440px; width: 100%; text-align: center; }}
+  h2 {{ font-size: 22px; margin-bottom: 12px; }}
+  p {{ color: #8892a4; line-height: 1.6; font-size: 15px; }}
+  a {{ color: #6366f1; }}
+</style>
+</head>
+<body>
+<div class="box">{body}<p style="margin-top:20px;font-size:13px"><a href="/">Back to dashboard</a></p></div>
+</body>
+</html>"""
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -268,9 +413,9 @@ def _vision_to_negotiation_params() -> dict:
 @app.route("/api/negotiate", methods=["POST"])
 def api_negotiate():
     """
-    Run the Fetch.ai 3-agent Bureau negotiation driven by the latest camera
-    vision counts. Hospital A's saline count sets the shortfall; B and C offer
-    from their Redis surplus.
+    Trigger a Fetch.ai Bureau negotiation driven by the latest camera vision
+    counts. Non-blocking: starts the bureau (if not running), pushes a trigger
+    to Redis, and returns immediately. SSE at /api/narration streams progress.
 
     Body (JSON, all optional — overrides vision-derived values):
         item   — supply item
@@ -281,56 +426,79 @@ def api_negotiate():
 
     # Derive from vision unless caller overrides
     vision_params = _vision_to_negotiation_params()
-    item     = data.get("item") or vision_params["item"]
-    need     = int(data.get("need") or vision_params["need"])
-    use_redis = data.get("redis", True)
-
-    if not AGENT_VENV_PYTHON.exists():
-        return jsonify({"ok": False,
-                        "error": f"Agent venv not found at {AGENT_VENV_PYTHON}. "
-                                 "Run: cd agent-communication-layer && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt"}), 500
+    item = data.get("item") or vision_params["item"]
+    need = int(data.get("need") or vision_params["need"])
 
     log.info(json.dumps({
         "tag": "FETCH", "file": "ui/app.py",
         "action": "negotiate_triggered",
-        "item": item, "need": need, "use_redis": use_redis,
+        "item": item, "need": need,
         "vision_source": vision_params.get("source"),
     }))
 
-    env = {**os.environ,
-           "STOCKPILE_EXIT_WHEN_DONE": "1",
-           "STOCKPILE_ITEM": item,
-           "STOCKPILE_NEED": str(need),
-           "REDIS_URL": os.getenv("REDIS_URL", "redis://localhost:6379")}
-    if use_redis:
-        env["STOCKPILE_REDIS"] = "1"
+    _ensure_bureau()
+    _push_trigger(item, quantity=need)
 
-    try:
-        result = subprocess.run(
-            [str(AGENT_VENV_PYTHON), "stockpile_agents.py"],
-            capture_output=True, text=True, timeout=45,
-            cwd=str(AGENT_DIR), env=env,
-        )
-        raw_log = result.stdout + result.stderr
+    return jsonify({
+        "ok": True,
+        "message": "Negotiation triggered — watching for updates via SSE",
+        "item": item,
+        "need": need,
+        "vision_source": vision_params.get("source"),
+        "vision_a": vision_params.get("vision_a"),
+        "vision_b": vision_params.get("vision_b"),
+    })
 
-        # Parse key events from the log for structured display
-        events = _parse_negotiation_log(raw_log)
 
-        log.info(json.dumps({
-            "tag": "FETCH", "file": "ui/app.py",
-            "action": "negotiate_complete",
-            "returncode": result.returncode,
-            "events_found": len(events),
-        }))
-        return jsonify({"ok": True, "log": raw_log, "events": events,
-                        "item": item, "need": need,
-                        "vision_source": vision_params.get("source"),
-                        "vision_a": vision_params.get("vision_a"),
-                        "vision_b": vision_params.get("vision_b")})
-    except subprocess.TimeoutExpired:
-        return jsonify({"ok": False, "error": "Negotiation timed out (45s)"}), 500
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+@app.route("/api/bureau/start", methods=["POST"])
+def api_bureau_start():
+    """Manually start or restart the bureau subprocess."""
+    _ensure_bureau()
+    running = _bureau_proc is not None and _bureau_proc.poll() is None
+    return jsonify({"ok": True, "running": running,
+                    "pid": _bureau_proc.pid if _bureau_proc else None})
+
+
+@app.route("/api/narration")
+def api_narration():
+    """SSE stream of narration events from the bureau."""
+    def stream():
+        sent = 0
+        while True:
+            if len(_narration_log) > sent:
+                for ev in _narration_log[sent:]:
+                    yield f"data: {json.dumps(ev)}\n\n"
+                sent = len(_narration_log)
+            time.sleep(0.4)
+
+    return Response(stream(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# ── Approval endpoints ────────────────────────────────────────────────────────
+
+@app.route("/req/<rid>/approve")
+def req_approve(rid):
+    _push_decision(rid, "approve")
+    return _approval_page("Transfer Approved",
+        "<h2>Transfer Approved</h2>"
+        "<p>Baymax will proceed with the transfer. You'll receive a confirmation shortly.</p>")
+
+
+@app.route("/req/<rid>/order")
+def req_order(rid):
+    _push_decision(rid, "order")
+    return _approval_page("External Order",
+        "<h2>External Order Initiated</h2>"
+        "<p>Baymax will source the supplies from an external supplier.</p>")
+
+
+@app.route("/req/<rid>/reject")
+def req_reject(rid):
+    _push_decision(rid, "reject")
+    return _approval_page("Rejected",
+        "<h2>Transfer Rejected</h2>"
+        "<p>The negotiation has been cancelled.</p>")
 
 
 def _parse_negotiation_log(log_text: str) -> list[dict]:
@@ -363,6 +531,6 @@ def _parse_negotiation_log(log_text: str) -> list[dict]:
 
 
 if __name__ == "__main__":
-    port = int(os.getenv("UI_PORT", "5001"))
-    print(f"\n  Stockpile Pipeline Dashboard → http://localhost:{port}\n")
+    port = UI_PORT
+    print(f"\n  Baymax Pipeline Dashboard → http://localhost:{port}\n")
     app.run(host="0.0.0.0", port=port, debug=False)

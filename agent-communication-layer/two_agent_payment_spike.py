@@ -72,9 +72,9 @@ BUYER_PORT = 8101
 # SERVICE agent — uses the real production seller protocol from settlement.py.
 # ---------------------------------------------------------------------------
 service = Agent(
-    name="stockpile_pay_service",
+    name="baymax_pay_service",
     port=SERVICE_PORT,
-    seed="stockpile-spike-service-seed",
+    seed="baymax-spike-service-seed",
     network=FET_NETWORK,
 )
 
@@ -93,9 +93,9 @@ SERVICE_WALLET = register_recipient_wallet(service)
 # simulate that by auto-committing a placeholder tx.
 # ---------------------------------------------------------------------------
 buyer = Agent(
-    name="stockpile_pay_buyer",
+    name="baymax_pay_buyer",
     port=BUYER_PORT,
-    seed="stockpile-spike-buyer-seed",
+    seed="baymax-spike-buyer-seed",
     network=FET_NETWORK,
 )
 
@@ -156,9 +156,9 @@ async def _kickoff(ctx: Context):
     await request_payment(
         ctx,
         user_address=buyer.address,
-        amount=None,  # uses STOCKPILE_PAYMENT_AMOUNT_FET (default 0.1)
+        amount=None,  # uses BAYMAX_PAYMENT_AMOUNT_FET (default 0.1)
         reference="spike-req-1",
-        description="STOCKPILE payment-protocol spike settlement.",
+        description="Baymax payment-protocol spike settlement.",
     )
 
 

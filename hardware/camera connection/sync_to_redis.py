@@ -1,10 +1,10 @@
 """
-sync_to_redis.py — push camera-detected supply counts into the Stockpile Redis.
+sync_to_redis.py — push camera-detected supply counts into the Baymax Redis.
 
 The vision pipeline (bottle_counter.py) counts saline on each side of the green
 straw -> Hospital A (left) and Hospital B (right). This bridge writes those
-counts into the SAME Redis the negotiation reads (tracks/redis), so the physical
-shelf becomes the live inventory signal:
+counts into the SAME Redis the negotiation reads, so the physical shelf becomes
+the live inventory signal:
 
     shelf  ->  MacBook camera  ->  Claude Vision  ->  Redis  ->  agent negotiation
                                                        ^^^^^ this file

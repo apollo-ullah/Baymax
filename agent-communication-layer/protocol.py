@@ -1,4 +1,4 @@
-"""protocol.py — FROZEN Wave 0 contract for the Stockpile agent network.
+"""protocol.py — FROZEN Wave 0 contract for the Baymax agent network.
 
 This module is the SINGLE SOURCE OF TRUTH for every cross-agent message model
 and the negotiation state machine. All Wave 1 streams (FRONT, NEGOTIATE, PAY,
@@ -15,7 +15,7 @@ Three categories live here:
      never local copies, or discoverability/compatibility breaks. We re-export
      them so every stream has one import surface.
 
-  2. Stockpile negotiation messages (PRD §10) — defined here
+  2. Baymax negotiation messages (PRD §10) — defined here
      -------------------------------------------------------
      SupplyRequest, SupplyOffer, TransferProposal, TransferAccept, TransferReject.
 
@@ -91,6 +91,10 @@ class NegotiationState(str, Enum):
     SETTLING = "settling"
     CONFIRMED = "confirmed"
     FAILED = "failed"          # terminal: no/insufficient offers (extension)
+    # --- Wave 3: admin approval gate + external supplier order ---------------
+    AWAITING_APPROVAL = "awaiting_approval"  # halted for the chat admin's decision
+    ORDERING = "ordering"                    # placing an external supplier order
+    ORDERED = "ordered"                      # terminal: external order settled
 
 
 class Urgency(str, Enum):

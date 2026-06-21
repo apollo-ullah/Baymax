@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Stockpile Pipeline</title>
+<title>Baymax Pipeline</title>
 <style>
   :root {
     --bg: #0f1117; --surface: #1a1d27; --border: #2a2d3e;
@@ -110,7 +110,7 @@
   .transfer .status-pill { font-size: 10px; padding: 2px 7px; border-radius: 4px; background: #052e16; color: #86efac; }
 
   /* ── action bar ── */
-  .actions { display: flex; gap: 10px; padding: 0 24px 18px; }
+  .actions { display: flex; gap: 10px; padding: 0 24px 18px; flex-wrap: wrap; align-items: center; }
   button { background: var(--accent); color: #fff; border: none; padding: 9px 18px; border-radius: 7px; font-family: inherit; font-size: 13px; cursor: pointer; transition: opacity .15s; }
   button:hover { opacity: .85; }
   button.secondary { background: var(--surface); border: 1px solid var(--border); color: var(--text); }
@@ -130,13 +130,37 @@
   /* ── no-redis banner ── */
   .no-redis { background: #1a0a0a; border: 1px solid #450a0a; border-radius: 8px; padding: 16px; margin: 18px 24px 0; color: #fca5a5; }
   .no-redis strong { color: var(--red); }
+
+  /* ── negotiation timeline ── */
+  .neg-event { display:flex; align-items:flex-start; gap:8px; padding:5px 0; border-bottom:1px solid var(--border); font-size:12px; }
+  .neg-event:last-child { border:none; }
+  .neg-chip { flex-shrink:0; font-size:10px; font-weight:700; text-transform:uppercase; padding:2px 7px; border-radius:4px; letter-spacing:.05em; }
+  .chip-shortfall_detected,.chip-requesting { background:#1a0a0a; color:#f87171; }
+  .chip-collecting_offers,.chip-evaluating { background:#1a1a0a; color:#facc15; }
+  .chip-awaiting_approval { background:#1a0a1a; color:#c084fc; }
+  .chip-proposing,.chip-settling { background:#0a1a0a; color:#4ade80; }
+  .chip-confirmed,.chip-ordered { background:#052e16; color:#4ade80; }
+  .chip-failed { background:#450a0a; color:#fca5a5; }
+  .chip-ordering { background:#1a1200; color:#fb923c; }
+  .chip-decision_sent { background:#1a1a2a; color:#818cf8; }
+  .chip-triggered { background:#1a1200; color:#fb923c; }
+
+  .approval-banner { background:#1a0a1a; border:1px solid #7c3aed; border-radius:8px; padding:14px; margin-bottom:10px; }
+  .approval-banner h3 { color:#c084fc; margin-bottom:8px; font-size:13px; }
+  .approval-banner .approval-detail { color:#8892a4; font-size:12px; margin-bottom:12px; line-height:1.5; }
+  .btn-approve { background:#16a34a; color:#fff; border:none; padding:8px 16px; border-radius:6px; cursor:pointer; font-size:13px; margin-right:6px; }
+  .btn-order   { background:#92400e; color:#fff; border:none; padding:8px 16px; border-radius:6px; cursor:pointer; font-size:13px; margin-right:6px; }
+  .btn-reject-dec { background:#7f1d1d; color:#fff; border:none; padding:8px 16px; border-radius:6px; cursor:pointer; font-size:13px; }
+  .bureau-status { font-size:11px; color:var(--muted); display:flex; align-items:center; gap:6px; }
+  .bureau-dot { width:7px; height:7px; border-radius:50%; background:var(--red); }
+  .bureau-dot.running { background:var(--green); }
 </style>
 </head>
 <body>
 
 <!-- Header -->
 <header>
-  <h1>⚕ Stockpile Pipeline</h1>
+  <h1>Baymax Pipeline</h1>
   <span class="region-badge">{{ region }}</span>
   <div class="right">
     <span class="redis-dot" id="redis-dot"></span>
@@ -172,6 +196,11 @@
   <button id="btn-who" onclick="refreshWho()">↻ Refresh WHO + Claude</button>
   <button id="btn-capture" class="secondary" onclick="triggerCapture()">📷 Capture Image</button>
   <button id="btn-negotiate" class="secondary" onclick="runNegotiation()" style="background:#1a1a3b;border-color:#4f46e5;color:#818cf8">⚡ Run Fetch.ai Negotiation</button>
+  <button id="btn-bureau" class="secondary" onclick="startBureau()" style="background:#0a1a0a;border-color:#166534;color:#4ade80">▶ Start Bureau</button>
+  <div class="bureau-status">
+    <span class="bureau-dot" id="bureau-dot"></span>
+    <span id="bureau-label">Bureau stopped</span>
+  </div>
 </div>
 
 <!-- Main grid -->
@@ -273,15 +302,24 @@
     </div>
   </div>
 
-  <!-- FETCH.AI NEGOTIATION card -->
-  <div class="card span2" id="card-negotiate-wrap" style="display:none">
+  <!-- FETCH.AI NEGOTIATION LIVE card -->
+  <div class="card span3" id="card-negotiate-live-wrap">
     <div class="card-header">
-      <span class="tag tag-fetch">FETCH.AI</span>
-      <span class="title">Agent Negotiation</span>
-      <span class="source">Bureau mode — 3-agent in-process</span>
+      <span class="tag tag-fetch">FETCH.AI NEGOTIATION LIVE</span>
+      <span class="title">Agent Negotiation Timeline</span>
+      <span class="source" id="neg-source">Bureau mode — 3-agent</span>
     </div>
-    <div class="card-body" id="card-negotiate">
-      <div class="empty">Click ⚡ Run Fetch.ai Negotiation to start…</div>
+    <div class="card-body">
+      <div id="approval-banner" class="approval-banner" style="display:none">
+        <h3>Approval Required</h3>
+        <div class="approval-detail" id="approval-detail">Waiting for details…</div>
+        <button class="btn-approve" onclick="sendDecision(currentReqId, 'approve')">Approve Transfer</button>
+        <button class="btn-order"   onclick="sendDecision(currentReqId, 'order')">Order Externally</button>
+        <button class="btn-reject-dec" onclick="sendDecision(currentReqId, 'reject')">Reject</button>
+      </div>
+      <div id="neg-timeline">
+        <div class="empty">Click ⚡ Run Fetch.ai Negotiation to start — events will appear here in real time.</div>
+      </div>
     </div>
   </div>
 
@@ -330,6 +368,21 @@ function render(s) {
     document.getElementById('no-redis-banner').style.display = '';
   }
 
+  // bureau status
+  const bureauDot = document.getElementById('bureau-dot');
+  const bureauLbl = document.getElementById('bureau-label');
+  if (s.bureau_running) {
+    bureauDot.className = 'bureau-dot running';
+    bureauLbl.textContent = 'Bureau running';
+    setStage('fetch', 'ok');
+  } else {
+    bureauDot.className = 'bureau-dot';
+    bureauLbl.textContent = 'Bureau stopped';
+    if (!s.transfers || s.transfers.length === 0) {
+      setStage('fetch', 'warn');
+    }
+  }
+
   // pipeline stage indicators
   const fc = s.forecast;
   const items = fc && fc.items ? fc.items : {};
@@ -338,7 +391,6 @@ function render(s) {
   setStage('who',     items.who_covid_30d_cases != null ? 'ok' : 'warn');
   setStage('vision',  s.vision_image_available ? 'ok' : 'warn');
   setStage('claude',  s.reasoning ? 'ok' : 'warn');
-  setStage('fetch',   s.transfers.length > 0 ? 'ok' : 'warn');
 
   // weather
   renderWeather(items);
@@ -358,6 +410,22 @@ function render(s) {
   renderTransfers(s.transfers);
   // alerts
   renderAlerts(s.alerts);
+
+  // approval banner from polled state
+  if (s.awaiting_approval && s.awaiting_approval.length > 0) {
+    const rid = s.awaiting_approval[0];
+    if (rid !== currentReqId) {
+      currentReqId = rid;
+      document.getElementById('approval-banner').style.display = '';
+      // Try to get detail from negotiation_log
+      const entry = (s.negotiation_log || []).find(e => e.req_id === rid && e.state === 'awaiting_approval');
+      if (entry) {
+        document.getElementById('approval-detail').textContent = entry.detail || 'Approval needed for ' + rid;
+      } else {
+        document.getElementById('approval-detail').textContent = 'Approval needed for request ' + rid;
+      }
+    }
+  }
 }
 
 function setStage(id, cls) {
@@ -601,16 +669,59 @@ function triggerCapture() {
     });
 }
 
-// ── Fetch.ai negotiation ────────────────────────────────────────────────────
+function startBureau() {
+  const btn = document.getElementById('btn-bureau');
+  btn.disabled = true;
+  btn.textContent = '⏳ Starting…';
+  fetch('/api/bureau/start', { method: 'POST' })
+    .then(r => r.json())
+    .then(d => {
+      btn.disabled = false;
+      btn.textContent = '▶ Start Bureau';
+      if (d.ok && d.running) {
+        toast('Bureau started (pid ' + d.pid + ') ✓');
+        document.getElementById('bureau-dot').className = 'bureau-dot running';
+        document.getElementById('bureau-label').textContent = 'Bureau running';
+      } else {
+        toast('Bureau start failed', true);
+      }
+    })
+    .catch(e => {
+      btn.disabled = false;
+      btn.textContent = '▶ Start Bureau';
+      toast('Network error: ' + e, true);
+    });
+}
+
+// ── Fetch.ai negotiation (async / SSE) ────────────────────────────────────────
+let _sseSource = null;
+let currentReqId = null;
+
+function appendNeg(ev) {
+  const tl = document.getElementById('neg-timeline');
+  // Clear "empty" placeholder on first event
+  const empty = tl.querySelector('.empty');
+  if (empty) tl.innerHTML = '';
+
+  const state = ev.state || ev.tag || 'event';
+  const detail = ev.detail || ev.msg || JSON.stringify(ev);
+  const chipClass = 'neg-chip chip-' + state.replace(/\s+/g, '_');
+  const div = document.createElement('div');
+  div.className = 'neg-event';
+  div.innerHTML = `<span class="${chipClass}">${escHtml(state)}</span><span style="color:#cbd5e1;line-height:1.4">${escHtml(detail)}</span>`;
+  tl.appendChild(div);
+  tl.scrollTop = tl.scrollHeight;
+}
+
 function runNegotiation() {
   const btn = document.getElementById('btn-negotiate');
-  const card = document.getElementById('card-negotiate-wrap');
-  const body = document.getElementById('card-negotiate');
   btn.disabled = true;
-  btn.textContent = '⏳ Negotiating…';
-  card.style.display = '';
-  body.innerHTML = '<div class="empty" style="color:#818cf8">Running 3-agent Bureau negotiation… (~15s)</div>';
-  setStage('fetch', 'warn');
+  btn.textContent = '⏳ Triggering…';
+
+  // Clear timeline
+  document.getElementById('neg-timeline').innerHTML = '';
+  document.getElementById('approval-banner').style.display = 'none';
+  currentReqId = null;
 
   fetch('/api/negotiate', {method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({redis:true})})
@@ -619,13 +730,19 @@ function runNegotiation() {
       btn.disabled = false;
       btn.textContent = '⚡ Run Fetch.ai Negotiation';
       if (d.ok) {
-        renderNegotiation(d);
-        setStage('fetch', 'ok');
-        toast('Fetch.ai negotiation complete ✓');
+        const src = d.vision_source || '';
+        const isVision = src.startsWith('vision');
+        appendNeg({
+          state: 'triggered',
+          detail: (isVision ? '📷 ' : '') + d.item + ' — need ' + d.need + ' units. ' + src
+        });
+        toast('Negotiation triggered — watching for updates…');
+        setStage('fetch', 'warn');
+        _subscribeSSE();
       } else {
-        body.innerHTML = `<div style="color:var(--red);font-size:12px;white-space:pre-wrap">${escHtml(d.error)}</div>`;
+        appendNeg({state: 'failed', detail: d.error || 'unknown error'});
         setStage('fetch', 'err');
-        toast('Negotiation error: ' + d.error, true);
+        toast('Negotiation error: ' + (d.error || 'unknown'), true);
       }
     })
     .catch(e => {
@@ -636,44 +753,43 @@ function runNegotiation() {
     });
 }
 
-function renderNegotiation(d) {
-  const body = document.getElementById('card-negotiate');
+function _subscribeSSE() {
+  if (_sseSource) { _sseSource.close(); _sseSource = null; }
+  _sseSource = new EventSource('/api/narration');
+  _sseSource.onmessage = function(e) {
+    let ev;
+    try { ev = JSON.parse(e.data); } catch(_) { return; }
+    appendNeg(ev);
 
-  // Show what the negotiation was based on
-  let sourceHtml = '';
-  if (d.vision_source) {
-    const isVision = d.vision_source.startsWith('vision');
-    sourceHtml = `<div style="margin-bottom:10px;padding:6px 10px;background:${isVision?'#0a1a0a':'#1a1a0a'};border:1px solid ${isVision?'#1a3300':'#2a2a00'};border-radius:4px;font-size:11px;color:${isVision?'#4ade80':'#facc15'}">
-      ${isVision?'📷':'⚠️'} <strong>${escHtml(d.item)}</strong> — need <strong>${d.need}</strong> units
-      ${d.vision_a != null ? `(Hospital A camera count: <strong>${d.vision_a}</strong>${d.vision_b != null ? `, Hospital B: <strong>${d.vision_b}</strong>` : ''})` : ''}
-      <br><span style="color:var(--muted)">${escHtml(d.vision_source)}</span>
-    </div>`;
-  }
+    // Show approval banner when awaiting_approval
+    if (ev.state === 'awaiting_approval' && ev.req_id) {
+      currentReqId = ev.req_id;
+      const banner = document.getElementById('approval-banner');
+      banner.style.display = '';
+      document.getElementById('approval-detail').textContent = ev.detail || 'Approval needed for ' + ev.req_id;
+    }
 
-  const tagColor = { idle:'#64748b', shortfall:'#f87171', requesting:'#fb923c',
-    collecting:'#facc15', evaluating:'#a78bfa', proposing:'#60a5fa',
-    settling:'#34d399', confirmed:'#4ade80', failed:'#f87171',
-    offer:'#94a3b8', accepted:'#4ade80', rejected:'#f87171',
-    split:'#fb923c', escalation:'#f87171' };
+    // Update Fetch.ai pipeline stage
+    if (ev.state === 'confirmed' || ev.state === 'ordered') {
+      setStage('fetch', 'ok');
+    } else if (ev.state === 'failed') {
+      setStage('fetch', 'err');
+    }
+  };
+  _sseSource.onerror = function() {
+    // SSE will auto-reconnect; no action needed
+  };
+}
 
-  let evHtml = '';
-  if (d.events && d.events.length) {
-    evHtml = '<div style="margin-bottom:10px">';
-    d.events.forEach(ev => {
-      const c = tagColor[ev.tag] || '#94a3b8';
-      evHtml += `<div style="margin:3px 0;font-size:12px;display:flex;gap:8px;align-items:flex-start">
-        <span style="background:${c}22;color:${c};border:1px solid ${c}44;border-radius:3px;padding:1px 6px;font-size:10px;white-space:nowrap;flex-shrink:0">${ev.tag}</span>
-        <span style="color:#cbd5e1;line-height:1.4">${escHtml(ev.msg)}</span></div>`;
-    });
-    evHtml += '</div>';
-  }
-
-  const logHtml = d.log
-    ? `<details style="margin-top:8px"><summary style="cursor:pointer;color:var(--muted);font-size:11px">Raw agent log</summary>
-       <pre style="font-size:10px;color:#64748b;background:#0a0a0a;border:1px solid #1e293b;border-radius:4px;padding:8px;margin-top:6px;white-space:pre-wrap;max-height:200px;overflow-y:auto">${escHtml(d.log)}</pre></details>`
-    : '';
-
-  body.innerHTML = sourceHtml + evHtml + logHtml || '<div class="empty">No events parsed</div>';
+function sendDecision(reqId, decision) {
+  if (!reqId) return;
+  fetch('/req/' + reqId + '/' + decision)
+    .then(() => {
+      document.getElementById('approval-banner').style.display = 'none';
+      appendNeg({state: 'decision_sent', detail: decision + ' sent for ' + reqId});
+      currentReqId = null;
+    })
+    .catch(e => toast('Decision error: ' + e, true));
 }
 
 // ── toast ──────────────────────────────────────────────────────────────────
@@ -694,6 +810,8 @@ function escHtml(s) {
 // ── boot ───────────────────────────────────────────────────────────────────
 poll();
 setInterval(poll, 3000);
+// Subscribe to SSE narration on page load to catch any in-progress negotiation
+_subscribeSSE();
 </script>
 </body>
 </html>

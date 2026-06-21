@@ -1,6 +1,6 @@
 """settlement.py — STREAM PAY: production SELLER-side Payment Protocol logic.
 
-The negotiation core (stockpile_agents.py) ends a successful deal at its
+The negotiation core (baymax_agents.py) ends a successful deal at its
 `settle_transfer()` hook. PAY replaces the Wave 0 stub with the real Fetch
 **Payment Protocol** handshake on the FET testnet:
 
@@ -43,10 +43,10 @@ spec, never the prose.
 
 ──────────────────────────────────────────────────────────────────────────────
 Environment knobs (see .env additions in the PAY report — no secrets):
-    STOCKPILE_PAYMENT_AMOUNT_FET   default "0.1"   FET charged per settlement
-    PAYMENT_VERIFY_ONCHAIN         default "true"  "false" => skip cosmpy query
-                                                   and trust the commit (DEV ONLY)
-    FETCH_NETWORK                  "testnet" (guardrail; we pin testnet config)
+    BAYMAX_PAYMENT_AMOUNT_FET    default "0.1"   FET charged per settlement
+    PAYMENT_VERIFY_ONCHAIN       default "true"  "false" => skip cosmpy query
+                                                 and trust the commit (DEV ONLY)
+    FETCH_NETWORK                "testnet" (guardrail; we pin testnet config)
 """
 
 from __future__ import annotations
@@ -81,10 +81,10 @@ from protocol import (
 PAYMENT_ROLE = "seller"
 
 #: FET amount charged per settlement (string, as the protocol expects).
-PAYMENT_AMOUNT_FET = os.getenv("STOCKPILE_PAYMENT_AMOUNT_FET", "0.1")
+PAYMENT_AMOUNT_FET = os.getenv("BAYMAX_PAYMENT_AMOUNT_FET", "0.1")
 
 #: Seconds the user has to approve + sign the payment before it expires.
-PAYMENT_DEADLINE_S = int(os.getenv("STOCKPILE_PAYMENT_DEADLINE_S", "300"))
+PAYMENT_DEADLINE_S = int(os.getenv("BAYMAX_PAYMENT_DEADLINE_S", "300"))
 
 #: testnet denom for FET on the Fetch stable testnet (dorado-1).
 TESTNET_DENOM = "atestfet"
@@ -245,18 +245,19 @@ async def _finalize_from_payment(
     pending = _PAYMENT_PENDING.pop(key, None)
     if not pending:
         return
-    from stockpile_agents import finalize_after_payment  # lazy import
-
-    await finalize_after_payment(
-        ctx, pending["req_id"], key, tx_id=tx_id,
-    )
+    if pending.get("is_order"):
+        from baymax_agents import finalize_after_order_payment  # lazy import
+        await finalize_after_order_payment(ctx, pending["req_id"], key, tx_id=tx_id)
+    else:
+        from baymax_agents import finalize_after_payment  # lazy import
+        await finalize_after_payment(ctx, pending["req_id"], key, tx_id=tx_id)
 
 
 async def _fail_from_payment(ctx: Context, reference: Optional[str], reason: str) -> None:
     pending = _PAYMENT_PENDING.pop(_resolve_pending_key(reference), None)
     if not pending:
         return
-    from stockpile_agents import fail_after_payment  # lazy import
+    from baymax_agents import fail_after_payment  # lazy import
 
     await fail_after_payment(ctx, pending["req_id"], reason)
 
@@ -375,7 +376,7 @@ async def request_payment(
         "test": "true",
         "content": (
             description
-            or "Approve to finalize the STOCKPILE inter-facility transfer settlement."
+            or "Approve to finalize the Baymax inter-facility transfer settlement."
         ),
     }
 
@@ -385,10 +386,11 @@ async def request_payment(
     # live path run_front.py wires this, so this should never fire.
     if not recipient.startswith("fetch1"):
         ctx.logger.error(
-            f"[payment] RequestPayment recipient {recipient!r} is NOT a fetch1... "
-            f"wallet — register_recipient_wallet(agent) was not wired at "
-            f"construction. ASI:One will reject this payment. "
-            f"See run_front.py / settlement.register_recipient_wallet."
+            "[payment] RequestPayment recipient %r is NOT a fetch1... "
+            "wallet — register_recipient_wallet(agent) was not wired at "
+            "construction. ASI:One will reject this payment. "
+            "See run_front.py / settlement.register_recipient_wallet.",
+            recipient,
         )
 
     req = RequestPayment(
@@ -422,21 +424,21 @@ async def request_payment(
 def _amount_for_total(total_units: int) -> str:
     """FET to charge for a settlement.
 
-    Per-unit when STOCKPILE_PAYMENT_PER_UNIT_FET is set (amount = per_unit *
-    units, minimum one unit), otherwise the flat STOCKPILE_PAYMENT_AMOUNT_FET.
+    Per-unit when BAYMAX_PAYMENT_PER_UNIT_FET is set (amount = per_unit *
+    units, minimum one unit), otherwise the flat BAYMAX_PAYMENT_AMOUNT_FET.
     Read at call time so deployments/tests can change pricing without re-import.
     """
-    per_unit = os.getenv("STOCKPILE_PAYMENT_PER_UNIT_FET", "").strip()
+    per_unit = os.getenv("BAYMAX_PAYMENT_PER_UNIT_FET", "").strip()
     if per_unit:
         try:
             return str(round(float(per_unit) * max(int(total_units), 1), 6))
         except (ValueError, TypeError):
             pass
-    return os.getenv("STOCKPILE_PAYMENT_AMOUNT_FET", PAYMENT_AMOUNT_FET)
+    return os.getenv("BAYMAX_PAYMENT_AMOUNT_FET", PAYMENT_AMOUNT_FET)
 
 
 # ---------------------------------------------------------------------------
-# Integrator entry point — called from stockpile_agents.settle_transfer.
+# Integrator entry point — called from baymax_agents.settle_transfer.
 # ---------------------------------------------------------------------------
 
 async def settle_via_payment_protocol(
@@ -448,7 +450,7 @@ async def settle_via_payment_protocol(
 ) -> str:
     """Kick off settlement for a completed negotiation via the Payment Protocol.
 
-    The integrator wires this into stockpile_agents.settle_transfer. It computes
+    The integrator wires this into baymax_agents.settle_transfer. It computes
     the charge for `plan`, sends a RequestPayment to `user_address` (the ASI:One
     user who must approve the FET payment), and returns a settlement reference.
 
@@ -476,7 +478,7 @@ async def settle_via_payment_protocol(
     total = sum(getattr(a, "quantity", 0) for a in legs)
     amount = _amount_for_total(total)
     description = (
-        f"STOCKPILE inter-facility transfer settlement {req_id}: "
+        f"Baymax inter-facility transfer settlement {req_id}: "
         f"{n} leg(s), {total} unit(s) total."
     )
     await request_payment(
@@ -497,6 +499,44 @@ async def settle_via_payment_protocol(
     return reference
 
 
+async def settle_order_via_payment_protocol(
+    ctx: Context,
+    req_id: str,
+    order,
+    user_address: str,
+    reply_to: Optional[str] = None,
+) -> str:
+    """Kick off settlement for an external supplier order via the Payment Protocol.
+
+    Mirrors settle_via_payment_protocol but for Wave 3 order paths. The order object
+    is a SupplierOrder dataclass; only quantity, vendor, and total_price are used here.
+    """
+    reference = f"order-pay-{req_id}"
+    total = getattr(order, "quantity", 0) or 0
+    vendor = getattr(order, "vendor", "supplier")
+    amount = _amount_for_total(total)
+    description = (
+        f"Baymax external order settlement {req_id}: "
+        f"{total} unit(s) from {vendor}."
+    )
+    await request_payment(
+        ctx,
+        user_address=user_address,
+        amount=amount,
+        reference=reference,
+        description=description,
+    )
+    chat = reply_to or user_address
+    if chat:
+        _PAYMENT_PENDING[reference] = {"reply_to": chat, "req_id": req_id, "is_order": True}
+    ctx.logger.info(
+        "[payment] settle_order_via_payment_protocol: requested %s FET "
+        "for order %s from %s; reference=%s. Awaiting CommitPayment.",
+        amount, req_id, user_address, reference,
+    )
+    return reference
+
+
 __all__ = [
     "PAYMENT_ROLE",
     "PAYMENT_AMOUNT_FET",
@@ -509,4 +549,5 @@ __all__ = [
     "build_payment_protocol",
     "request_payment",
     "settle_via_payment_protocol",
+    "settle_order_via_payment_protocol",
 ]

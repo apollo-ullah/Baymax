@@ -1,6 +1,6 @@
 # Agents
 
-Fetch.ai uAgents for the Stockpile network. One folder per agent.
+Fetch.ai uAgents for the Baymax network. One folder per agent.
 
 Per the PRD (v0.2), the qualifying core is hospital uAgents that implement the
 **Chat Protocol** (reachable in ASI:One), negotiate transfers, and settle with
