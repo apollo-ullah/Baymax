@@ -18,6 +18,7 @@ try:
         ATTR_TRANSFER_QUANTITY,
     )
     from .phoenix_client import print_phoenix_status, get_tracer
+    from .trace_store import save_trace
 except ImportError:
     from trace_schema import (
         TRACE_REASONING_DECISION,
@@ -29,6 +30,7 @@ except ImportError:
         ATTR_TRANSFER_QUANTITY,
     )
     from phoenix_client import print_phoenix_status, get_tracer
+    from trace_store import save_trace
 
 
 def trace_reasoning_decision(
@@ -69,5 +71,7 @@ def trace_reasoning_decision(
 
         print(f"[TRACE] {TRACE_REASONING_DECISION}")
         print(json.dumps(trace_event, indent=2))
+
+    save_trace(trace_event)
 
     return trace_event

@@ -16,6 +16,7 @@ try:
         ATTR_STATUS,
     )
     from .phoenix_client import print_phoenix_status, get_tracer
+    from .trace_store import save_trace
 except ImportError:
     from trace_schema import (
         TRACE_INVENTORY_LOW,
@@ -25,6 +26,7 @@ except ImportError:
         ATTR_STATUS,
     )
     from phoenix_client import print_phoenix_status, get_tracer
+    from trace_store import save_trace
 
 
 def trace_inventory_low(hospital_id, item, current_pct, status):
@@ -49,5 +51,7 @@ def trace_inventory_low(hospital_id, item, current_pct, status):
 
         print(f"[TRACE] {TRACE_INVENTORY_LOW}")
         print(json.dumps(trace_event, indent=2))
+
+    save_trace(trace_event)
 
     return trace_event

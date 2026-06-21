@@ -16,6 +16,7 @@ try:
         ATTR_REASON,
     )
     from .phoenix_client import print_phoenix_status, get_tracer
+    from .trace_store import save_trace
 except ImportError:
     from trace_schema import (
         TRACE_FORECAST_SIGNAL,
@@ -25,6 +26,7 @@ except ImportError:
         ATTR_REASON,
     )
     from phoenix_client import print_phoenix_status, get_tracer
+    from trace_store import save_trace
 
 
 def trace_forecast_signal(region, item, predicted_demand_increase_pct, reason):
@@ -49,5 +51,7 @@ def trace_forecast_signal(region, item, predicted_demand_increase_pct, reason):
 
         print(f"[TRACE] {TRACE_FORECAST_SIGNAL}")
         print(json.dumps(trace_event, indent=2))
+
+    save_trace(trace_event)
 
     return trace_event

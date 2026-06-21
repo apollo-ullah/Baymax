@@ -20,6 +20,7 @@ try:
         ATTR_TRANSFER_QUANTITY,
     )
     from .phoenix_client import print_phoenix_status, get_tracer
+    from .trace_store import save_trace
 except ImportError:
     from trace_schema import (
         TRACE_DECISION_CHAIN,
@@ -33,6 +34,7 @@ except ImportError:
         ATTR_TRANSFER_QUANTITY,
     )
     from phoenix_client import print_phoenix_status, get_tracer
+    from trace_store import save_trace
 
 
 def trace_decision_chain(
@@ -74,5 +76,7 @@ def trace_decision_chain(
 
         print(f"[TRACE] {TRACE_DECISION_CHAIN}")
         print(json.dumps(trace_event, indent=2))
+
+    save_trace(trace_event)
 
     return trace_event

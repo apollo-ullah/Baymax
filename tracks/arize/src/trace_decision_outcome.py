@@ -18,6 +18,7 @@ try:
         ATTR_IMPROVEMENT_NOTE,
     )
     from .phoenix_client import print_phoenix_status, get_tracer
+    from .trace_store import save_trace
 except ImportError:
     from trace_schema import (
         TRACE_DECISION_OUTCOME,
@@ -29,6 +30,7 @@ except ImportError:
         ATTR_IMPROVEMENT_NOTE,
     )
     from phoenix_client import print_phoenix_status, get_tracer
+    from trace_store import save_trace
 
 
 def trace_decision_outcome(
@@ -64,5 +66,7 @@ def trace_decision_outcome(
 
         print(f"[TRACE] {TRACE_DECISION_OUTCOME}")
         print(json.dumps(trace_event, indent=2))
+
+    save_trace(trace_event)
 
     return trace_event
