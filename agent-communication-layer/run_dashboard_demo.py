@@ -37,7 +37,29 @@ from uagents import Bureau  # noqa: E402
 
 import baymax_agents as sp  # noqa: E402
 import dashboard_bus  # noqa: E402
+import settlement  # noqa: E402  (import here — keeps negotiation core decoupled)
 from baymax_agents import attach_front_handlers, attach_hospital_handlers  # noqa: E402
+
+
+def _log_balance(front, label: str = "Hospital A") -> None:
+    """Log Hospital A's atestfet balance at startup so operator knows real vs simulated."""
+    try:
+        from cosmpy.aerial.client import LedgerClient, NetworkConfig
+        client = LedgerClient(NetworkConfig.fetchai_stable_testnet())
+        wallet_addr = str(front.wallet.address())
+        balances = client.query_bank_all_balances(wallet_addr)
+        atestfet = next((b.amount for b in balances if b.denom == "atestfet"), "0")
+        print(
+            f"[startup] {label} wallet {wallet_addr}: "
+            f"{atestfet} atestfet — "
+            f"{'FUNDED (real settlement)' if int(atestfet) > 0 else 'UNFUNDED (simulated settlement)'}"
+        )
+    except Exception as exc:
+        wallet_addr = str(front.wallet.address()) if hasattr(front, "wallet") else "?"
+        print(
+            f"[startup] {label} wallet {wallet_addr}: balance unreachable ({exc}) "
+            f"— settlement will be SIMULATED"
+        )
 
 
 def build_bureau():
@@ -47,6 +69,19 @@ def build_bureau():
     attach_front_handlers(front)
     attach_hospital_handlers(hb, "Hospital B")
     attach_hospital_handlers(hc, "Hospital C")
+
+    # --- Settlement wiring (dashboard / direct-transfer path) ---
+    # 1. Register payer wallet (Hospital A = FRONT, sends FET).
+    settlement.register_payer_wallet(front)
+    # 2. Register payee wallets for B/C (suppliers that receive FET) + record facility name.
+    settlement.register_recipient_wallet(hb, "Hospital B")
+    settlement.register_recipient_wallet(hc, "Hospital C")
+    # 3. Wire the autonomous direct-transfer hook into the negotiation core.
+    #    One-way: core never imports settlement; we register from here.
+    sp.register_direct_settlement_hook(settlement.settle_via_direct_transfer)
+
+    # 4. Startup balance narration: tells the operator if settlement will be real or simulated.
+    _log_balance(front, "Hospital A")
 
     # Wire the narration sink so each milestone reaches the dashboard SSE.
     sp.register_narration_sink(dashboard_bus.publish_narration)

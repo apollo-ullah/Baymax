@@ -919,23 +919,59 @@ def register_settlement_hook(fn) -> None:
     _SETTLEMENT_HOOK = fn
 
 
+# --- Direct settlement hook (dashboard / reply_to-independent path) --------
+# The dashboard path sets reply_to=None, so the human-wallet Payment Protocol
+# branch above never fires. This hook provides a SEPARATE, reply_to-independent
+# entry for autonomous agent-to-agent FET settlement (direct cosmpy send_tokens).
+# run_dashboard_demo.py registers settlement.settle_via_direct_transfer here.
+# The core NEVER imports settlement at module load — clean one-way dependency.
+_DIRECT_SETTLEMENT_HOOK = None
+
+
+def register_direct_settlement_hook(fn) -> None:
+    """Register the autonomous direct-transfer settlement handler.
+
+    `fn` is an async callable fn(ctx, req_id, plan) -> str returning a
+    settlement reference (joined tx hashes, or "simulated-<req_id>" offline).
+    Call once at deployment wiring time (e.g. from run_dashboard_demo.py).
+    This hook fires ONLY when reply_to is None (dashboard path); the existing
+    reply_to-gated _SETTLEMENT_HOOK is left completely untouched.
+    """
+    global _DIRECT_SETTLEMENT_HOOK
+    _DIRECT_SETTLEMENT_HOOK = fn
+
+
 async def settle_transfer(ctx: Context, req_id: str, plan) -> str:
     """Settle a resolved transfer.
 
-    If a settlement hook is registered (deployment) AND the negotiation has an
-    ASI:One chat user to bill, delegate to it — the real testnet FET Payment
-    Protocol handshake (RequestPayment -> CommitPayment -> CompletePayment),
-    surfaced as the action in the chat, returning the settlement reference.
-
-    Otherwise (local Bureau demo, or a negotiation with no chat user) return a
-    stub reference so the negotiation chain still completes end to end.
+    Priority order:
+    1. If _DIRECT_SETTLEMENT_HOOK is registered AND reply_to is None (dashboard
+       path): call the autonomous cosmpy direct-transfer hook, log the confirmed
+       legs to the Redis transfers stream, and return the ref.
+    2. If _SETTLEMENT_HOOK is registered AND the negotiation has an ASI:One chat
+       user (reply_to truthy): delegate to the human-wallet Payment Protocol
+       handshake (RequestPayment -> CommitPayment -> CompletePayment).
+    3. Otherwise (local Bureau demo / no hooks): return a stub reference so the
+       negotiation chain still completes end to end.
     """
     neg = NEGOTIATIONS.get(req_id, {})
     user_address = neg.get("reply_to")
+
+    # Path 1 — dashboard / autonomous: direct cosmpy FET send (no human wallet).
+    if _DIRECT_SETTLEMENT_HOOK is not None and not user_address:
+        ref = await _DIRECT_SETTLEMENT_HOOK(ctx, req_id, plan)
+        accepted_legs = [neg["leg"][pid] for pid in neg.get("accepts", []) if pid in neg.get("leg", {})]
+        settlement_status = "real" if (ref and not ref.startswith("simulated-") and not ref.startswith("stub-")) else "simulated"
+        _log_confirmed_transfers(neg, accepted_legs, ref, tx_id=ref if settlement_status == "real" else None)
+        return ref
+
+    # Path 2 — ASI:One / human-wallet Payment Protocol (reply_to-gated).
     if _SETTLEMENT_HOOK is not None and user_address:
         return await _SETTLEMENT_HOOK(
             ctx, req_id, plan, user_address=user_address, reply_to=user_address,
         )
+
+    # Path 3 — stub (local Bureau demo, offline harnesses).
     ref = f"stub-settlement-{req_id}"
     ctx.logger.info(
         f"[settlement-stub] Settled {len(plan.allocations)} leg(s) on "

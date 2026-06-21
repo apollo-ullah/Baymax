@@ -118,24 +118,63 @@ PAYMENT_VERIFY_STRICT = os.getenv("PAYMENT_VERIFY_STRICT", "").strip().lower() i
 #: AgentRepresentation that does NOT expose .wallet).
 _RECIPIENT_WALLETS: dict[str, str] = {}
 
+#: facility-name -> fetch1... wallet address. Populated by register_recipient_wallet()
+#: (which receives a full Agent and can look up the facility name via agent_base).
+#: Used by _facility_wallet() inside settle_via_direct_transfer to resolve payees.
+_FACILITY_WALLETS: dict[str, str] = {}
+
 #: pay-<req_id> -> {reply_to, req_id} so CompletePayment/CancelPayment can
 #: narrate back into the ASI:One chat (CommitPayment is async after CONFIRMED).
 _PAYMENT_PENDING: dict[str, dict] = {}
 
 
-def register_recipient_wallet(agent) -> str:
+def register_recipient_wallet(agent, facility: str | None = None) -> str:
     """Record `agent`'s FET wallet address so payments can name it as recipient.
 
     Call this ONCE at construction time (module scope) with the full Agent
     object — that is where `agent.wallet.address()` is available. Returns the
     resolved wallet address.
 
+    If `facility` is provided (e.g. "Hospital B"), also records the facility ->
+    fetch1... mapping in _FACILITY_WALLETS so settle_via_direct_transfer() can
+    resolve the payee by facility name.
+
     Why: inside an on_event/on_message handler, `ctx.agent` is an
     AgentRepresentation without a `.wallet`, so we cache the mapping here.
     """
     wallet_addr = str(agent.wallet.address())
     _RECIPIENT_WALLETS[agent.address] = wallet_addr
+    # Also record facility name -> wallet for the direct-transfer path.
+    _fac = facility
+    if _fac is None:
+        # Try to resolve from agent_base's ADDRESS_TO_FACILITY mapping.
+        try:
+            import agent_base as _ab
+            _fac = getattr(_ab, "ADDRESS_TO_FACILITY", {}).get(agent.address)
+        except Exception:
+            pass
+    if _fac:
+        _FACILITY_WALLETS[_fac] = wallet_addr
     return wallet_addr
+
+
+def record_facility_wallet(facility: str, fetch1_addr: str) -> None:
+    """Directly record a facility-name -> fetch1... wallet mapping.
+
+    Companion to register_recipient_wallet() for cases where the caller already
+    has the fetch1... address (e.g. from agent.wallet.address()) and wants to
+    explicitly wire the facility name without going through the agent object.
+    """
+    _FACILITY_WALLETS[facility] = fetch1_addr
+
+
+def _facility_wallet(facility: str) -> str | None:
+    """Resolve the fetch1... wallet address for a supplier facility.
+
+    Returns None when the facility has not been registered (callers then fall
+    back to a simulated ref — fail-closed, never hangs).
+    """
+    return _FACILITY_WALLETS.get(facility)
 
 
 def resolve_recipient_wallet(ctx: Context) -> str:
@@ -164,6 +203,50 @@ def resolve_recipient_wallet(ctx: Context) -> str:
         return _RECIPIENT_WALLETS[addr]
     # 3) never crash (see note above — this is not a valid on-chain payee).
     return str(addr) if addr else ""
+
+
+# ---------------------------------------------------------------------------
+# Payer-wallet registry + autonomous FET transfer helper (C3.1).
+# ---------------------------------------------------------------------------
+
+_PAYER_WALLET = {"wallet": None}  # module-global; the FRONT agent's LocalWallet
+
+
+def register_payer_wallet(agent) -> str:
+    """Capture the payer (FRONT) agent's LocalWallet at construction for autonomous sends."""
+    _PAYER_WALLET["wallet"] = agent.wallet
+    return str(agent.wallet.address())
+
+
+def resolve_payer_wallet():
+    return _PAYER_WALLET["wallet"]
+
+
+def _send_fet_sync(payee_addr: str, amount_fet: str, denom: str) -> str | None:
+    from cosmpy.aerial.client import LedgerClient, NetworkConfig
+    wallet = resolve_payer_wallet()
+    if wallet is None or not payee_addr.startswith("fetch1"):
+        return None
+    try:
+        client = LedgerClient(NetworkConfig.fetchai_stable_testnet())
+        # FET has 18 decimals; amount_fet is a decimal FET string → atestfet integer.
+        amount_atestfet = int(round(float(amount_fet) * 1e18))
+        tx = client.send_tokens(payee_addr, amount_atestfet, denom, wallet)
+        tx.wait_to_complete()
+        return tx.tx_hash if tx.response.is_successful() else None
+    except Exception:
+        return None  # unfunded / RPC down / any error → caller simulates
+
+
+async def send_fet(payee_addr: str, amount_fet: str, *, denom: str = "atestfet") -> str | None:
+    """Autonomous on-chain FET transfer payer→payee on dorado-1. Bounded, fail-soft → None."""
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(_send_fet_sync, payee_addr, amount_fet, denom),
+            timeout=float(os.getenv("BAYMAX_SEND_TIMEOUT", "25")),
+        )
+    except Exception:
+        return None
 
 
 def _verify_onchain_enabled() -> bool:
@@ -675,6 +758,35 @@ async def settle_order_via_payment_protocol(
     return reference
 
 
+# ---------------------------------------------------------------------------
+# Autonomous direct-transfer settlement (dashboard / reply_to=None path).
+# ---------------------------------------------------------------------------
+
+async def settle_via_direct_transfer(ctx, req_id: str, plan) -> str:
+    """Autonomous FET settlement: for each allocation leg, send FET payer→payee.
+
+    Designed for the dashboard path where reply_to=None (no ASI:One human wallet
+    in the loop). Each supplier facility's registered fetch1... wallet is resolved
+    via _facility_wallet(); if not registered (offline / no wallet wired), the leg
+    falls back to a simulated ref — fail-closed, never hangs.
+
+    Returns a ";"-joined string of tx hashes (real) or "simulated-<req_id>-<offerer>"
+    strings (offline/unfunded), or "stub-settlement-<req_id>" when the plan has no
+    allocations (should not happen in practice).
+    """
+    refs = []
+    for leg in getattr(plan, "allocations", []) or []:
+        payee = _facility_wallet(leg.offerer)            # fetch1… from register_recipient_wallet
+        amount = _amount_for_total(getattr(leg, "quantity", 0))
+        tx = await send_fet(payee, amount) if payee else None
+        ctx.logger.info(
+            f"[settle] {leg.offerer} {amount} FET → {payee or '(no wallet)'}: "
+            f"{tx or 'SIMULATED'}"
+        )
+        refs.append(tx or f"simulated-{req_id}-{leg.offerer}")
+    return ";".join(refs) if refs else f"stub-settlement-{req_id}"
+
+
 __all__ = [
     "PAYMENT_ROLE",
     "PAYMENT_AMOUNT_FET",
@@ -683,9 +795,15 @@ __all__ = [
     "make_funds",
     "register_recipient_wallet",
     "resolve_recipient_wallet",
+    "record_facility_wallet",
+    "_facility_wallet",
+    "register_payer_wallet",
+    "resolve_payer_wallet",
+    "send_fet",
     "verify_payment_onchain",
     "build_payment_protocol",
     "request_payment",
     "settle_via_payment_protocol",
     "settle_order_via_payment_protocol",
+    "settle_via_direct_transfer",
 ]
