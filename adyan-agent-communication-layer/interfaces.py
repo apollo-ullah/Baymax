@@ -378,21 +378,21 @@ def order_from_supplier(item: str, quantity: int, *, hospital: str) -> SupplierO
     function: callers in async handlers invoke it via asyncio.to_thread()."""
     import logging
 
-    import supplier_order  # lazy: keeps Browserbase/playwright optional
+    try:
+        import supplier_order  # lazy: keeps Browserbase/playwright optional
 
-    if supplier_order.browserbase_enabled():
-        try:
+        if supplier_order.browserbase_enabled():
             o = supplier_order.browserbase_order(item, quantity, hospital=hospital)
             logging.getLogger("baymax.order").info(
                 "[order] backend=browserbase %s x%s vendor=%s total=%s ref=%s",
                 item, quantity, o.vendor, o.total_price, o.confirmation_ref,
             )
             return o
-        except Exception as exc:  # noqa: BLE001 — fail-closed to the mock
-            logging.getLogger("baymax.order").warning(
-                "[order] backend=browserbase FAILED for %s x%s (%s) -> mock fallback",
-                item, quantity, exc,
-            )
+    except Exception as exc:  # noqa: BLE001 — fail-closed to the mock (missing lib too)
+        logging.getLogger("baymax.order").warning(
+            "[order] backend=browserbase FAILED for %s x%s (%s) -> mock fallback",
+            item, quantity, exc,
+        )
     return _mock_order_from_supplier(item, quantity, hospital=hospital)
 
 
