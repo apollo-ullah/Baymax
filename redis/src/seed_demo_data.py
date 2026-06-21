@@ -1,9 +1,7 @@
-"""Seed demo data into Redis.
-
-For now this only seeds hospital metadata (no inventory yet).
-"""
+"""Seed demo data into Redis."""
 
 import json
+import os
 from datetime import datetime, timezone
 
 from redis_client import get_redis
@@ -78,6 +76,40 @@ SURPLUS = {
 }
 
 
+def _demo_mode() -> bool:
+    return os.getenv("BAYMAX_DEMO_MODE", "").lower() in ("1", "true", "yes") or \
+        os.getenv("BAYMAX_VISION_DEMO", "").lower() in ("1", "true", "yes")
+
+
+# Bottle-desk demo: max ~4 props per camera; negotiate 1–3 units.
+DEMO_INVENTORY = {
+    "hospital_a": {
+        "IV Fluids": {"qty": 1, "pct": 25, "status": "low", "reserve": 3},
+        "Saline": {"qty": 1, "pct": 25, "status": "low", "reserve": 3},
+        "Sutures": {"qty": 0, "pct": 0, "status": "low", "reserve": 3},
+        "N95 Masks": {"qty": 4, "pct": 100, "status": "ok", "reserve": 1},
+    },
+    "hospital_b": {
+        "IV Fluids": {"qty": 3, "pct": 75, "status": "ok", "reserve": 1},
+        "Saline": {"qty": 4, "pct": 100, "status": "ok", "reserve": 1},
+        "Sutures": {"qty": 1, "pct": 25, "status": "low", "reserve": 1},
+        "N95 Masks": {"qty": 3, "pct": 75, "status": "ok", "reserve": 1},
+    },
+    "hospital_c": {
+        "IV Fluids": {"qty": 2, "pct": 50, "status": "warning", "reserve": 1},
+        "Saline": {"qty": 2, "pct": 50, "status": "warning", "reserve": 1},
+        "Sutures": {"qty": 1, "pct": 25, "status": "low", "reserve": 1},
+        "N95 Masks": {"qty": 2, "pct": 50, "status": "warning", "reserve": 1},
+    },
+}
+
+DEMO_SURPLUS = {
+    "hospital_a": {"IV Fluids": 0, "Saline": 0, "Sutures": 0, "N95 Masks": 3},
+    "hospital_b": {"IV Fluids": 2, "Saline": 3, "Sutures": 0, "N95 Masks": 2},
+    "hospital_c": {"IV Fluids": 1, "Saline": 1, "Sutures": 0, "N95 Masks": 1},
+}
+
+
 FORECAST = {
     "region": "san_francisco",
     "items": {
@@ -92,6 +124,10 @@ FORECAST = {
         "Saline": {
             "predicted_demand_increase_pct": 25,
             "reason": "Higher emergency department volume",
+        },
+        "Sutures": {
+            "predicted_demand_increase_pct": 20,
+            "reason": "Trauma / wound-care surge",
         },
     },
 }
@@ -143,7 +179,8 @@ def seed_inventory() -> None:
     """Write each hospital's inventory items to a Redis hash and print a summary."""
     client = get_redis()
     updated_at = datetime.now(timezone.utc).isoformat()
-    for hospital_id, items in INVENTORY.items():
+    table = DEMO_INVENTORY if _demo_mode() else INVENTORY
+    for hospital_id, items in table.items():
         key = inventory_key(hospital_id)
         mapping = {}
         for item_name, fields in items.items():
@@ -162,7 +199,8 @@ def seed_inventory() -> None:
 def seed_surplus() -> None:
     """Write each hospital's surplus counts to a Redis hash and print them."""
     client = get_redis()
-    for hospital_id, items in SURPLUS.items():
+    table = DEMO_SURPLUS if _demo_mode() else SURPLUS
+    for hospital_id, items in table.items():
         key = surplus_key(hospital_id)
         mapping = {item_name: str(qty) for item_name, qty in items.items()}
         client.hset(key, mapping=mapping)

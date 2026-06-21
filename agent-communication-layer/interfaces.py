@@ -18,10 +18,38 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 from dataclasses import dataclass, field
 from typing import List, Optional
 
 _log = logging.getLogger("baymax.interfaces")
+
+
+def demo_mode() -> bool:
+    """Bottle-desk demo: negotiate 1–3 units (max ~4 visible on camera), not 100+."""
+    if os.getenv("BAYMAX_DEMO_MODE", "").strip().lower() in ("1", "true", "yes"):
+        return True
+    return os.getenv("BAYMAX_VISION_DEMO", "").strip().lower() in ("1", "true", "yes")
+
+
+def demo_target_on_hand() -> int:
+    """Minimum on-hand level for the requester (Hospital A) before a shortfall."""
+    return int(os.getenv("BAYMAX_DEMO_TARGET", "3"))
+
+
+def demo_safety_reserve() -> int:
+    """Units each surplus hospital keeps before offering spare capacity."""
+    return int(os.getenv("BAYMAX_DEMO_RESERVE", "1"))
+
+
+def demo_shelf_capacity() -> int:
+    """Max bottles visible on the demo shelf (used for pct/status)."""
+    return int(os.getenv("BAYMAX_DEMO_CAPACITY", "4"))
+
+
+def vision_item_key(item: str) -> str:
+    """Redis vision:latest sub-key for a canonical item name."""
+    return item.strip().lower().replace(" ", "_")
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +197,31 @@ _MOCK_INVENTORY = {
     ("Hospital C", "sutures"): (30, 70, 50),        # spare = 0  -> declines
 }
 
+# Bottle-desk demo: max ~4 props visible per camera; negotiate 1–3 units.
+# safety_threshold = target on-hand (A) or reserve floor (B/C).
+def _build_demo_mock_inventory() -> dict:
+    cap = demo_shelf_capacity()
+    target = demo_target_on_hand()
+    reserve = demo_safety_reserve()
+    return {
+        # IV fluids — split: A need 2, B spare 2, C spare 1
+        ("Hospital A", "IV fluids"): (1, cap, target),
+        ("Hospital B", "IV fluids"): (3, cap, reserve),
+        ("Hospital C", "IV fluids"): (2, cap, reserve),
+        # Saline — B alone covers A (need 2, B spare 3)
+        ("Hospital A", "saline"): (1, cap, target),
+        ("Hospital B", "saline"): (4, cap, reserve),
+        ("Hospital C", "saline"): (2, cap, reserve),
+        # Sutures — no internal surplus (escalate to external order)
+        ("Hospital A", "sutures"): (0, cap, target),
+        ("Hospital B", "sutures"): (1, cap, reserve),
+        ("Hospital C", "sutures"): (1, cap, reserve),
+    }
+
+
+def _active_mock_inventory() -> dict:
+    return _build_demo_mock_inventory() if demo_mode() else _MOCK_INVENTORY
+
 # Nearest-expiry of each facility's stock (drives the expiry constraint). The
 # canonical demo: C's IV-fluid stock expires soonest, so a smart ranker (Claude,
 # Workstream B) might trade ETA vs expiry; the Wave 0 mock keeps it nearest-first.
@@ -230,13 +283,14 @@ def _mock_get_inventory(hospital: str, item: str) -> InventoryState:
     so callers can treat a missing item as 'no stock / no spare'."""
     meta = _FACILITY_META.get(hospital, {"lat": 0.0, "lng": 0.0, "capacity_default": 0})
     key = (hospital, item)
-    if key not in _MOCK_INVENTORY:
+    table = _active_mock_inventory()
+    if key not in table:
         return InventoryState(
             hospital=hospital, item=item, qty=0,
             capacity=meta["capacity_default"], safety_threshold=0,
             lat=meta["lat"], lng=meta["lng"], present=False,
         )
-    qty, capacity, safety = _MOCK_INVENTORY[key]
+    qty, capacity, safety = table[key]
     return InventoryState(
         hospital=hospital, item=item, qty=qty, capacity=capacity,
         safety_threshold=safety, lat=meta["lat"], lng=meta["lng"], present=True,

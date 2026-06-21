@@ -45,18 +45,21 @@ VALID_HOSPITALS = {"hospital_a", "hospital_b"}
 # Pub/sub channel the dashboard publishes one-shot capture requests on.
 CAPTURE_CHANNEL = "vision:capture_request"
 
-SINGLE_HOSPITAL_PROMPT = """You are a hospital supply inventory scanner.
+SINGLE_HOSPITAL_PROMPT = None  # deprecated — use vision_count.count_shelf()
 
-Count the saline units visible in this image. Count ALL of the following as one saline unit:
-- Saline bags or IV fluid bags
-- Water bottles or liquid containers
-- Yellow or red Red Bull cans (used as saline proxies in this demo)
-- Any similar cylindrical or pouch-shaped liquid supply item
 
-Respond in exactly this format — no extra text:
+def count_via_claude(jpeg_bytes: bytes, item: str) -> tuple[int, str]:
+    """Send frame to Claude Vision; count demo props as `item`."""
+    _agent_dir = Path(__file__).resolve().parents[2] / "agent-communication-layer"
+    if str(_agent_dir) not in sys.path:
+        sys.path.insert(0, str(_agent_dir))
+    import vision_count  # noqa: E402
 
-COUNT: <number>
-NOTES: <one sentence describing what you see, or "None">"""
+    os.environ.setdefault("BAYMAX_VISION_DEMO", "1")
+    count, notes = vision_count.count_shelf(jpeg_bytes, item)
+    if count is None:
+        return 0, notes or "no count parsed"
+    return int(count), notes or ""
 
 
 def capture_and_encode() -> tuple[bytes, object]:
@@ -86,36 +89,6 @@ def load_and_encode(path: str) -> tuple[bytes, object]:
     if not ok:
         sys.exit("ERROR: Failed to encode image.")
     return buf.tobytes(), img
-
-
-def count_via_claude(jpeg_bytes: bytes) -> tuple[int, str]:
-    """Send frame to Claude Vision, return (count, notes)."""
-    import anthropic
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        sys.exit("ERROR: ANTHROPIC_API_KEY not set.")
-    client = anthropic.Anthropic(api_key=api_key)
-    b64 = base64.standard_b64encode(jpeg_bytes).decode()
-    msg = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=128,
-        messages=[{"role": "user", "content": [
-            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}},
-            {"type": "text", "text": SINGLE_HOSPITAL_PROMPT},
-        ]}],
-    )
-    raw = msg.content[0].text.strip()
-    print(f"Claude Vision raw:\n{raw}")
-    count, notes = 0, ""
-    for line in raw.splitlines():
-        if line.startswith("COUNT:"):
-            try:
-                count = int(line.split(":", 1)[1].strip())
-            except ValueError:
-                pass
-        elif line.startswith("NOTES:"):
-            notes = line.split(":", 1)[1].strip()
-    return count, notes
 
 
 def write_image_to_redis(hospital_id: str, jpeg_bytes: bytes) -> None:
@@ -148,25 +121,34 @@ def grab_from_open_camera(cap):
     return buf.tobytes()
 
 
-def persist(r, hospital_id, item, capacity, reserve, jpeg_bytes, qty, notes):
+def persist(r, hospital_id, item, capacity, threshold, jpeg_bytes, qty, notes):
     """Write image + inventory + surplus + merged vision:latest to Redis."""
     if jpeg_bytes:
         r.set(f"vision:image:{hospital_id}", base64.b64encode(jpeg_bytes).decode())
 
     pct = _pct(qty, capacity)
     status = status_from_pct(pct)
-    surplus = max(0, qty - reserve)
-    write_inventory(hospital_id, item, qty, pct, status)
+    surplus = max(0, qty - threshold)
+    # Write reserve into the inventory record so redis_inventory reads shortfall correctly.
+    record = {
+        "qty": qty, "pct": pct, "status": status, "reserve": threshold,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    r.hset(f"hospital:{hospital_id}:inventory", item, json.dumps(record))
     write_surplus(hospital_id, item, surplus)
 
-    # Merge into vision:latest so the other hospital's data is preserved.
     try:
         existing_raw = r.get("vision:latest")
         existing = json.loads(existing_raw) if existing_raw else {}
     except Exception:
         existing = {}
     item_key = item.lower().replace(" ", "_")
-    existing[hospital_id] = {item_key: qty}
+    section = existing.get(hospital_id) or {}
+    if not isinstance(section, dict):
+        section = {}
+    section[item_key] = qty
+    existing[hospital_id] = section
+    existing["active_item"] = item
     existing["captured_at"] = datetime.now(timezone.utc).isoformat()
     existing["source"] = f"capture_single ({hospital_id})"
     if notes:
@@ -182,7 +164,7 @@ def _redis():
                                socket_connect_timeout=2, socket_timeout=2)
 
 
-def capture_once(r, hospital_id, label, item, capacity, reserve):
+def capture_once(r, hospital_id, label, item, capacity, threshold):
     """Take ONE camera frame, count via Claude Vision, write everything to Redis."""
     import cv2
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Hospital {label}: capturing frame…")
@@ -190,14 +172,14 @@ def capture_once(r, hospital_id, label, item, capacity, reserve):
     out = str(Path(__file__).parent / f"capture_{hospital_id}_{int(time.time())}.jpg")
     cv2.imwrite(out, frame)
     print("Sending to Claude Vision…")
-    qty, notes = count_via_claude(jpeg_bytes)
-    pct, status, surplus = persist(r, hospital_id, item, capacity, reserve,
+    qty, notes = count_via_claude(jpeg_bytes, item)
+    pct, status, surplus = persist(r, hospital_id, item, capacity, threshold,
                                    jpeg_bytes, qty, notes)
     print(f"Detected: {qty} {item} — {notes} (pct={pct} status={status} surplus={surplus})")
     return qty
 
 
-def run_watch(hospital_id, label, item, capacity, reserve):
+def run_watch(hospital_id, label, item, capacity, threshold):
     """Wait for one-shot capture triggers on the shared Redis pub/sub channel.
 
     The dashboard publishes {"target": "<hospital_id>"|"all"} to CAPTURE_CHANNEL.
@@ -226,9 +208,10 @@ def run_watch(hospital_id, label, item, capacity, reserve):
                 target = str(payload.get("target", "all")).lower()
                 if target not in ("all", "both", hospital_id):
                     continue
-                print(f"\n[trigger] capture request (target={target})")
+                scan_item = payload.get("item") or item
+                print(f"\n[trigger] capture request (target={target}, item={scan_item})")
                 try:
-                    capture_once(r, hospital_id, label, item, capacity, reserve)
+                    capture_once(r, hospital_id, label, scan_item, capacity, threshold)
                     print("=== Capture done — waiting for next trigger ===")
                 except SystemExit as e:
                     print(f"capture error: {e}")
@@ -242,7 +225,7 @@ def run_watch(hospital_id, label, item, capacity, reserve):
             time.sleep(2)
 
 
-def run_loop(r, hospital_id, label, item, capacity, reserve, interval, vision_every):
+def run_loop(r, hospital_id, label, item, capacity, threshold, interval, vision_every):
     """Continuous live-feed capture: push a fresh frame every `interval` seconds,
     re-counting via Claude Vision every `vision_every`-th frame."""
     import cv2
@@ -267,14 +250,14 @@ def run_loop(r, hospital_id, label, item, capacity, reserve, interval, vision_ev
             notes = ""
             if do_vision:
                 try:
-                    last_qty, notes = count_via_claude(jpeg_bytes)
+                    last_qty, notes = count_via_claude(jpeg_bytes, item)
                 except SystemExit:
                     raise
                 except Exception as e:
                     notes = f"vision error: {e}"
             qty = last_qty
 
-            persist(r, hospital_id, item, capacity, reserve, jpeg_bytes, qty, notes)
+            persist(r, hospital_id, item, capacity, threshold, jpeg_bytes, qty, notes)
             ts = datetime.now().strftime("%H:%M:%S")
             tag = f"counted {qty}" if do_vision else "image only"
             print(f"[{ts}] frame {frame_i}: pushed ({tag})")
@@ -293,9 +276,13 @@ def main():
     if hospital_id not in VALID_HOSPITALS:
         sys.exit(f"ERROR: HOSPITAL_ID must be one of {VALID_HOSPITALS}")
 
+    demo = os.getenv("BAYMAX_VISION_DEMO", "1").lower() in ("1", "true", "yes")
     item = os.environ.get("ITEM", "Saline")
-    capacity = int(os.environ.get("CAPACITY", "10"))
-    reserve = int(os.environ.get("RESERVE", "2"))
+    capacity = int(os.environ.get("CAPACITY", "4" if demo else "10"))
+    if hospital_id == "hospital_a":
+        threshold = int(os.environ.get("RESERVE", os.environ.get("BAYMAX_DEMO_TARGET", "3" if demo else "2")))
+    else:
+        threshold = int(os.environ.get("RESERVE", os.environ.get("BAYMAX_DEMO_RESERVE", "1" if demo else "2")))
 
     p = argparse.ArgumentParser()
     src = p.add_mutually_exclusive_group()
@@ -317,7 +304,7 @@ def main():
     if args.watch:
         if args.count is not None or args.image:
             sys.exit("ERROR: --watch uses the live camera; don't combine with --count/--image")
-        run_watch(hospital_id, label, item, capacity, reserve)
+        run_watch(hospital_id, label, item, capacity, threshold)
         return
 
     r = _redis()
@@ -326,7 +313,7 @@ def main():
     if args.loop:
         if args.count is not None or args.image:
             sys.exit("ERROR: --loop uses the live camera; don't combine with --count/--image")
-        run_loop(r, hospital_id, label, item, capacity, reserve,
+        run_loop(r, hospital_id, label, item, capacity, threshold,
                  args.interval, args.vision_every)
         return
 
@@ -352,10 +339,10 @@ def main():
             print(f"Frame saved: {out}")
 
         print("Sending to Claude Vision...")
-        qty, notes = count_via_claude(jpeg_bytes)
+        qty, notes = count_via_claude(jpeg_bytes, item)
         print(f"Detected: {qty} {item} — {notes}")
 
-    pct, status, surplus = persist(r, hospital_id, item, capacity, reserve,
+    pct, status, surplus = persist(r, hospital_id, item, capacity, threshold,
                                    jpeg_bytes, qty, notes)
     if jpeg_bytes:
         print(f"Image written to Redis: vision:image:{hospital_id}")

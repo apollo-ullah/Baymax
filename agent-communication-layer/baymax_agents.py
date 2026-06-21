@@ -341,6 +341,24 @@ async def start_crisis(ctx: Context, crisis_text: str, *, requester: str = REQUE
                            "Escalate to manual review.", final=True)
         return None
 
+    # Live shelf scan (optional): re-read inventory from Claude Vision for THIS item.
+    import vision_inventory  # lazy — no uagents dep
+    if vision_inventory.vision_on_crisis_enabled():
+        await _emit(ctx, reply_to=reply_to, source=source, label="scanning",
+                    detail=f"Scanning the shelf for **{item}** at {requester}…")
+        try:
+            inv = await asyncio.to_thread(
+                vision_inventory.refresh_vision_inventory, requester, item,
+            )
+            await _emit(
+                ctx, reply_to=reply_to, source=source, label="scanned",
+                detail=f"Vision count: {inv.qty} {item} on hand at {requester} "
+                       f"(target {inv.safety_threshold}, shortfall {inv.shortfall}).",
+            )
+        except Exception as exc:  # noqa: BLE001
+            await _emit(ctx, reply_to=reply_to, source=source, label="scanned",
+                        detail=f"Vision scan skipped ({exc}); using last known inventory.")
+
     await _emit(ctx, reply_to=reply_to, source=source, label="researched",
                 detail=f"Acting on **{item}** for {requester} — checking the network now.")
     return await start_negotiation(ctx, item, requester=requester,

@@ -52,6 +52,10 @@ _FETCH_ROOT = Path(__file__).resolve().parents[1]
 if str(_FETCH_ROOT) not in sys.path:
     sys.path.insert(0, str(_FETCH_ROOT))
 
+_AGENT_DIR = Path(__file__).resolve().parents[1] / "agent-communication-layer"
+if str(_AGENT_DIR) not in sys.path:
+    sys.path.insert(0, str(_AGENT_DIR))
+
 log = logging.getLogger("baymax_ui")
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
@@ -404,16 +408,19 @@ def api_capture():
     data = request.get_json(silent=True) or {}
     hospital_id = data.get("hospital_id") or HOSPITAL_ID
     manual_count = data.get("count")
+    item = data.get("item") or os.getenv("BAYMAX_ITEM", "Saline")
 
     log.info(json.dumps({
         "tag": "VISION", "file": "ui/app.py",
         "action": "capture_triggered",
         "hospital_id": hospital_id,
+        "item": item,
         "manual_count": manual_count,
     }))
 
-    env = {**os.environ, "HOSPITAL_ID": hospital_id,
-           "REDIS_URL": os.getenv("REDIS_URL", "redis://localhost:6379")}
+    env = {**os.environ, "HOSPITAL_ID": hospital_id, "ITEM": item,
+           "REDIS_URL": os.getenv("REDIS_URL", "redis://localhost:6379"),
+           "BAYMAX_VISION_DEMO": os.getenv("BAYMAX_VISION_DEMO", "1")}
 
     cmd = [sys.executable, str(CAPTURE_SINGLE_SCRIPT)]
     if manual_count is not None:
@@ -535,38 +542,52 @@ def api_crisis():
 
 def _vision_to_negotiation_params() -> dict:
     """
-    Read vision:latest from Redis and derive negotiation parameters.
+    Read vision:latest + crisis:active from Redis and derive negotiation parameters.
 
-    Hospital A's saline count from the camera becomes the current on-hand qty.
-    We negotiate to reach a target of 20 units — so need = max(0, 20 - count_a).
-    Hospital B's count is written to Redis inventory so the agent reads it as
-    surplus when STOCKPILE_REDIS=1.
-
-    Returns {"item", "need", "vision_a", "vision_b", "target", "source"}.
-    Falls back to IV fluids / need=200 when no vision data is available.
+    Uses whichever item the crisis flow selected (or the active vision item).
+    need = max(1, target - count_a) with a demo-friendly default target of 3.
+    Falls back to mock-scale defaults when no vision data is available.
     """
-    SALINE_TARGET = int(os.getenv("SALINE_TARGET", "20"))
+    from interfaces import demo_mode, demo_target_on_hand, vision_item_key
+
+    target = demo_target_on_hand() if demo_mode() else int(os.getenv("BAYMAX_DEMO_TARGET", "20"))
+    default_item = "IV fluids"
+    default_need = 2 if demo_mode() else 200
+
     try:
         r = _redis()
+        item = default_item
+        crisis_raw = r.get("crisis:active")
+        if crisis_raw:
+            crisis = json.loads(crisis_raw)
+            at_risk = crisis.get("at_risk") or []
+            if at_risk and isinstance(at_risk[0], dict):
+                item = at_risk[0].get("item") or item
+
         raw = r.get("vision:latest")
         if not raw:
-            return {"item": "IV fluids", "need": 200, "source": "default (no vision data)"}
+            return {"item": item, "need": default_need,
+                    "source": "default (no vision data)"}
         v = json.loads(raw)
-        count_a = (v.get("hospital_a") or {}).get("saline")
-        count_b = (v.get("hospital_b") or {}).get("saline")
+        item = v.get("active_item") or item
+        ikey = vision_item_key(item)
+        count_a = (v.get("hospital_a") or {}).get(ikey)
+        count_b = (v.get("hospital_b") or {}).get(ikey)
         if count_a is None:
-            return {"item": "IV fluids", "need": 200, "source": "default (vision missing hospital_a)"}
-        need = max(1, SALINE_TARGET - count_a)
+            return {"item": item, "need": default_need,
+                    "source": f"default (vision missing hospital_a/{ikey})"}
+        need = max(1, target - int(count_a))
         return {
-            "item": "Saline",
+            "item": item,
             "need": need,
             "vision_a": count_a,
             "vision_b": count_b,
-            "target": SALINE_TARGET,
-            "source": f"vision (Hospital A has {count_a}, target {SALINE_TARGET} → need {need})",
+            "target": target,
+            "source": f"vision ({item}: Hospital A has {count_a}, target {target} → need {need})",
         }
     except Exception as e:
-        return {"item": "IV fluids", "need": 200, "source": f"default (redis error: {e})"}
+        return {"item": default_item, "need": default_need,
+                "source": f"default (redis error: {e})"}
 
 
 @app.route("/api/negotiate", methods=["POST"])
