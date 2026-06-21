@@ -133,40 +133,43 @@ def _send_approval_imessage(req_id: str, detail: str):
         log.warning("[imessage] failed: %s", exc)
 
 
+def _handle_narration_payload(payload: dict):
+    """Process one narration event into in-memory state and trigger iMessage if needed."""
+    _narration_log.append(payload)
+    if len(_narration_log) > 50:
+        del _narration_log[:-50]
+    state  = payload.get("state")
+    req_id = payload.get("req_id")
+    if state == "awaiting_approval" and req_id and req_id not in _awaiting_approval:
+        detail = payload.get("detail", "")
+        _awaiting_approval[req_id] = {"detail": detail, "notified": False}
+        _send_approval_imessage(req_id, detail)
+        _awaiting_approval[req_id]["notified"] = True
+
+
 def _narration_subscriber():
-    """Background thread: subscribe to baymax:narration pubsub and update state."""
+    """Poll baymax:narration:log Redis list — reliable, never misses events."""
     while True:
+        idx = 0
         try:
             import redis as _redis_lib
             url = os.getenv("REDIS_URL", "redis://localhost:6379")
             r = _redis_lib.Redis.from_url(url, decode_responses=True,
-                                          socket_connect_timeout=2, socket_timeout=2)
-            pubsub = r.pubsub()
-            pubsub.subscribe("baymax:narration")
-            for message in pubsub.listen():
-                if message.get("type") != "message":
-                    continue
-                try:
-                    payload = json.loads(message["data"])
-                except (ValueError, TypeError):
-                    continue
-
-                # Append to log, cap at 50
-                _narration_log.append(payload)
-                if len(_narration_log) > 50:
-                    del _narration_log[:-50]
-
-                # Check for awaiting_approval
-                state = payload.get("state")
-                req_id = payload.get("req_id")
-                if state == "awaiting_approval" and req_id and req_id not in _awaiting_approval:
-                    detail = payload.get("detail", "")
-                    _awaiting_approval[req_id] = {"detail": detail, "notified": False}
-                    _send_approval_imessage(req_id, detail)
-                    _awaiting_approval[req_id]["notified"] = True
-
+                                          socket_connect_timeout=3, socket_timeout=10)
+            # Start from the current end so we don't replay old events on startup
+            idx = r.llen("baymax:narration:log")
+            log.info("[narration] connected, watching from index %d", idx)
+            while True:
+                items = r.lrange("baymax:narration:log", idx, idx + 49)
+                for raw in items:
+                    try:
+                        _handle_narration_payload(json.loads(raw))
+                    except Exception:
+                        pass
+                idx += len(items)
+                time.sleep(0.4)
         except Exception as exc:
-            log.warning("[narration_subscriber] error: %s — retrying in 2s", exc)
+            log.warning("[narration] error: %s — retrying in 2s", exc)
             time.sleep(2)
 
 

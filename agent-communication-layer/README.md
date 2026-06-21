@@ -1,204 +1,95 @@
-# Stockpile — Cross-Hospital Supply Negotiation Agents
+# Baymax — Fetch.ai Sponsor Track
 
 ![tag:innovationlab](https://img.shields.io/badge/innovationlab-3D8BD3)
 ![tag:hackathon](https://img.shields.io/badge/hackathon-5F43F1)
 ![tag:healthcare](https://img.shields.io/badge/healthcare-00B894)
 
-A network of hospital agents that detect supply shortfalls and **autonomously
-negotiate and settle inter-facility transfers** — before anyone runs out. A
-supply manager states an intent in natural language through ASI:One
-("Hospital A is short on IV fluids"); the network finds surplus, composes a
-transfer (splitting across facilities when no single one covers the need), and
-settles it as a real testnet transaction — narrating each step back in the chat.
+A network of hospital uAgents that detect supply shortfalls and **autonomously negotiate and settle inter-facility transfers** — before anyone runs out. A supply manager states an intent in natural language through ASI:One ("Hospital A is short on IV fluids"); the network finds surplus, composes a transfer (splitting across facilities when no single one covers the need), and settles it as a real testnet transaction — narrating each step back in the chat.
 
-This is operational logistics only — *what to move, how much, by when*. Never
-clinical guidance. Scope is non-controlled consumables within a single health
-system / regional mutual-aid network, where inter-facility transfers are routine.
-
-> Built for the Fetch.ai **"From Intent to Action"** challenge.
+> Operational logistics only — *what to move, how much, by when.* Never clinical guidance.
 
 ---
 
-## Architecture
+## How we use Fetch.ai
 
-Three Fetch.ai uAgents run the negotiation:
+### uAgents
 
-| Agent | Facility | Role |
+Three independent `uagents.Agent`s run the negotiation — one per hospital. Each agent has a deterministic identity (derived from a seed), discovers the others via the Almanac, and communicates over the uAgents message bus. All agent construction goes through `agent_base.build_hospital_agent(...)`, which enforces testnet-only networking and installs a pre-3.14 event loop fix so the framework initializes cleanly on Python 3.14.
+
+| Agent | Address | Role |
 | :-- | :-- | :-- |
-| `stockpile_front` | Hospital A | **Requester + ASI:One surface.** Carries the Chat Protocol; detects the shortfall, broadcasts the request, ranks offers, composes the transfer, settles it, narrates the result. |
-| `stockpile_hospital_b` | Hospital B | **Surplus facility.** Responds with constrained offers; accepts/rejects proposed transfer legs. |
-| `stockpile_hospital_c` | Hospital C | **Surplus facility.** Same. |
+| `baymax_front` | `agent1qtmgxmgr6l8jzegay8wketwm576g58ndarpjzrvrd70jxtfg84wmujwcvau` | Requester + ASI:One surface |
+| `baymax_hospital_b` | `agent1qf6xup6ayvegczq0nq829wcf8smvlxharjkj7fa67ezymq2ye4dcujrheke` | Surplus facility B |
+| `baymax_hospital_c` | `agent1qd0jd7w0t6t5xzx5myupdajyk2z65zm9xsvrag2cn3909z6qmyg76kdwftt` | Surplus facility C |
 
-**The chain (PRD §10):**
+### Chat Protocol (v0.3.0)
+
+The front agent carries the **official** `AgentChatProtocol` from `uagents_core.contrib.protocols.chat`. It is re-exported unchanged from `protocol.py` — ASI:One matches by schema digest, so a local redefinition would be a different, incompatible protocol. Every negotiation milestone (shortfall detected, offers collected, transfer composed, settled) streams back to the chat user as a `ChatMessage` in real time.
+
+The intent parser (`front_agent.parse_intent`) turns "Hospital A is short on IV fluids" into a structured `SupplyRequest`. It has substantial hardening against ASI:One's echo loop: milestone/meta regexes, an echo-chatter heuristic, and a per-sender cooldown prevent the chat surface's own narration from being re-ingested as a new user intent.
+
+### Payment Protocol (v0.1.0)
+
+The front agent also carries `AgentPaymentProtocol` (seller role). When a transfer is settled, `settlement.py` sends `RequestPayment` to the chat user — the in-chat FET payment card renders in ASI:One because `metadata["provider_agent_wallet"]` and `metadata["fet_network"]` are populated. The user signs; we receive `CommitPayment`; we verify the transaction on-chain via cosmpy (in a worker thread, to avoid blocking the event loop); we reply `CompletePayment` and emit the terminal narration.
+
+Verified live: on-chain tx `912BB2030A5F14467F434D4CDB0F1DDE23EE6E72E19B9F778998D17A5046557F` on Dorado testnet.
+
+### Agentverse / Mailbox
+
+Each agent runs with `mailbox=True` and `publish_agent_details=True`, making it reachable from ASI:One without a public endpoint. The one-time browser Mailbox connect is the only manual step.
+
+---
+
+## The negotiation
 
 ```
 shortfall_detected → requesting → collecting_offers → evaluating
-   → (re_planning if no single offer covers the need) → proposing
-   → settling → confirmed
+   → (re_planning if no single offer covers the need) → proposing → settling → confirmed
 ```
 
-**The moment that proves it is real:** no single facility covers the request, so
-the front agent composes a **split** (e.g. 150 from the near facility + 50 from
-the far one) and settles it — constraint handling plus a real transaction, not a
-scripted hand-off.
-
-### Module map
-
-| File | What it is | Owner |
-| :-- | :-- | :-- |
-| `protocol.py` | **Frozen contract.** All message models (negotiation + re-exported Chat/Payment Protocol) and the negotiation state machine. | shared |
-| `interfaces.py` | The two stubbed seams with working mocks: `get_inventory` (Redis seam) and `rank_offers` (Claude seam). | shared |
-| `agent_base.py` | Shared building blocks: agent factory, facility registry, address derivation, the Chat Protocol shell. | shared |
-| `stockpile_agents.py` | The 3-agent negotiation core + local Bureau runner. | negotiation |
-| `front_agent.py` | ASI:One-facing FRONT agent: NL intent → negotiation, with chat narration + a Bureau self-test. | front |
-| `settlement.py` | Testnet FET Payment Protocol (seller role): `RequestPayment → CommitPayment → CompletePayment`. | pay |
-| `run_front.py` | Per-agent **Mailbox** runner for Hospital A: chat **+** payment protocols + the settlement bridge. | ship |
-| `run_hospital_b.py` / `run_hospital_c.py` | Per-agent **Mailbox** runners for the surplus facilities. | ship |
-| `hello_world_agent.py` | Phase-0 Chat Protocol proof (live in ASI:One). | — |
-
-### Stubbed seams (deliberately not implemented here)
-
-Both are owned by other workstreams and ship as deterministic mocks so this
-layer is never blocked. The function **signatures are the contract**:
-
-- `get_inventory(hospital, item) -> InventoryState` — live stock (Redis). *Mock:* hardcoded scenarios.
-- `rank_offers(need, offers) -> RankedPlan` — multi-constraint offer ranking (Claude). *Mock:* nearest-first greedy allocator that produces the canonical split.
+The moment that proves it is real: no single facility covers the request, so the agent re-plans into a **split transfer** (150 units from Hospital B + 50 from Hospital C), proposes each leg independently, collects accepts, and then triggers on-chain settlement. This is real constraint-handling, not scripted message-passing.
 
 ---
 
-## Run the local demo
+## The wire contract
+
+`protocol.py` is the single source of truth for every cross-agent message and the negotiation state machine. Stockpile negotiation models (`SupplyRequest`, `SupplyOffer`, `TransferProposal`, `TransferAccept`, `TransferReject`, `NegotiationState`, `Urgency`) are defined here and imported everywhere. No module redefines them.
+
+---
+
+## Run
 
 ```bash
-cd adyan-agent-communication-layer
-python -m venv .venv && source .venv/bin/activate     # Python 3.12+ (verified on 3.14)
+cd agent-communication-layer
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-# Run the 3-agent negotiation in one process (Bureau). Self-exits when done.
-STOCKPILE_EXIT_WHEN_DONE=1 python stockpile_agents.py
+# One-process Bureau demo (self-exits when done)
+STOCKPILE_EXIT_WHEN_DONE=1 ./.venv/bin/python stockpile_agents.py
+
+# Full offline end-to-end including settlement
+./.venv/bin/python wave2_e2e_check.py
+
+# Live Mailbox mode (three terminals)
+./.venv/bin/python run_hospital_b.py
+./.venv/bin/python run_hospital_c.py
+./.venv/bin/python run_front.py
 ```
 
-Pick the scenario with `STOCKPILE_ITEM`:
+Scenarios via `STOCKPILE_ITEM`: `"IV fluids"` (split, default) / `"saline"` (full cover) / `"sutures"` (no offer → escalation).
 
-| `STOCKPILE_ITEM` | Demonstrates |
+---
+
+## Key files
+
+| File | What it does |
 | :-- | :-- |
-| `"IV fluids"` (default) | **Split** across two facilities (150 + 50) |
-| `"saline"` | **Full cover** by a single facility |
-| `"sutures"` | **No offer** — graceful escalation to manual procurement |
-
-```bash
-STOCKPILE_EXIT_WHEN_DONE=1 STOCKPILE_ITEM="saline" python stockpile_agents.py
-```
-
----
-
-## Run as separate Agentverse agents (per-agent Mailbox mode)
-
-For Agentverse registration / live ASI:One, each agent runs in **its own process**
-and connects via its **own Mailbox** (no public inbound endpoint needed). Three
-runners — one per facility — are the entrypoints. Each imports `agent_base`
-first (the Python-3.14 event-loop rule), pins `FETCH_NETWORK=testnet`, prints its
-address, and runs.
-
-| Runner | Agent | Protocols carried |
-| :-- | :-- | :-- |
-| `run_front.py` | `stockpile_front` (Hospital A) | **Chat Protocol** + **Payment Protocol** (both `publish_manifest=True`) |
-| `run_hospital_b.py` | `stockpile_hospital_b` (Hospital B) | negotiation Models only |
-| `run_hospital_c.py` | `stockpile_hospital_c` (Hospital C) | negotiation Models only |
-
-Run each in a **separate terminal** (order does not matter):
-
-```bash
-./.venv/bin/python run_hospital_b.py     # surplus facility B
-./.venv/bin/python run_hospital_c.py     # surplus facility C
-./.venv/bin/python run_front.py          # Hospital A — ASI:One + payment entrypoint
-```
-
-Each prints a banner with its **address** and the Agent **Inspector URL**. For
-each agent, do the one-time Agentverse Mailbox connect:
-
-1. Open the **Agent Inspector** URL printed in that agent's logs.
-2. **Connect → Mailbox → Finish** (one-time per agent; needs a browser login).
-3. Open the agent's **Agentverse profile** and copy the URL into `DELIVERABLES.md`.
-
-`run_front.py` additionally wires settlement into the front agent: it attaches the
-PAY stream's **Payment Protocol** (seller role), registers the agent's FET wallet,
-and registers the settlement handler on the negotiation core so a **settled**
-transfer triggers a real testnet `RequestPayment` in the same ASI:One conversation
-(see “Settlement wiring” below).
-
-### Use it from ASI:One (live)
-
-Once `run_front.py`'s Mailbox is connected:
-
-1. Go to **[ASI:One](https://asi1.ai)** and find the `stockpile_front` agent (by
-   its address, below).
-2. Send a natural-language intent, e.g.:
-   - `Hospital A is short on IV fluids`  *(split across B + C)*
-   - `we're short 100 saline`            *(full cover by B)*
-   - `need sutures at Hospital A`        *(no offer → graceful escalation)*
-3. Watch each negotiation milestone (`shortfall_detected → requesting →
-   collecting_offers → evaluating → proposing → settling → confirmed`) stream
-   back into the chat.
-4. On `confirmed`, approve + sign the **FET payment** request in your ASI:One
-   wallet to settle the transfer on testnet.
-
-> Phase-0 sanity check: `hello_world_agent.py` is a minimal ASI:One-compatible
-> Chat Protocol agent (`./.venv/bin/python hello_world_agent.py`) if you only want
-> to verify Mailbox + chat plumbing.
-
-### Settlement wiring (`run_front.py`)
-
-The negotiation core ends a successful deal at `stockpile_agents.settle_transfer()`.
-`run_front.py` registers the real handler on the core via
-`stockpile_agents.register_settlement_hook(settlement.settle_via_payment_protocol)`,
-so the instant a deal settles, `settle_transfer()` delegates to the Payment Protocol —
-sending a `RequestPayment` to the ASI:One chat user for the **final** settled plan
-(post re-plan). The user's `CommitPayment` is verified on-chain (in a worker thread)
-and answered with `CompletePayment` / `CancelPayment`. No polling, no double-fire.
-Per-transfer pricing is honored via `STOCKPILE_PAYMENT_PER_UNIT_FET` (falls back to the
-flat `STOCKPILE_PAYMENT_AMOUNT_FET`). The whole wired path (chat → negotiate → settle →
-pay) is proven offline by `wave2_e2e_check.py`.
-
----
-
-## Guardrails
-
-- **Testnet only.** `FETCH_NETWORK=testnet` is forced in `agent_base.py`; payment
-  verification uses `NetworkConfig.fetchai_stable_testnet()`. Never mainnet, never real funds.
-- **No committed secrets.** Agent seeds and keys live in `.env` (see `.env.example`)
-  and are gitignored along with `private_keys.json` and `.venv/`.
-
----
-
-## Agent addresses
-
-Deterministic from each agent's seed (`agent_base.address_for(...)`); stable across
-restarts as long as the `*_SEED` env vars are unchanged. These are the addresses the
-runners above print and that you use to find the agents on ASI:One / Agentverse.
-
-| Agent | Facility | Address | Agentverse profile |
-| :-- | :-- | :-- | :-- |
-| `stockpile_front` | Hospital A | `agent1qtmgxmgr6l8jzegay8wketwm576g58ndarpjzrvrd70jxtfg84wmujwcvau` | _fill after Mailbox connect_ |
-| `stockpile_hospital_b` | Hospital B | `agent1qf6xup6ayvegczq0nq829wcf8smvlxharjkj7fa67ezymq2ye4dcujrheke` | _fill after Mailbox connect_ |
-| `stockpile_hospital_c` | Hospital C | `agent1qd0jd7w0t6t5xzx5myupdajyk2z65zm9xsvrag2cn3909z6qmyg76kdwftt` | _fill after Mailbox connect_ |
-
-> The Agentverse profile links are filled in by hand once each agent's one-time
-> Mailbox connect is done — see `DELIVERABLES.md` for the checklist. Addresses
-> shown are for the default dev seeds; set the `STOCKPILE_*_SEED` env vars for a
-> real deployment (the addresses will then change accordingly).
-
-Re-derive them at any time:
-
-```bash
-./.venv/bin/python -c "import agent_base; print(*(f'{f}: {agent_base.address_for(f)}' for f in ('Hospital A','Hospital B','Hospital C')), sep=chr(10))"
-```
-
-## Status
-
-Wave 0 (frozen contract) + the 3-agent negotiation, the ASI:One FRONT agent
-(`front_agent.py`), the testnet Payment Protocol (`settlement.py`), and the
-per-agent Mailbox runners (`run_*.py`, SHIP) are all in place. Remaining work is
-the **manual, browser-gated** Agentverse Mailbox connect for each agent + the live
-ASI:One demo (tracked in `DELIVERABLES.md`). The Wave-2 direct settlement seam is
-wired and verified end to end (`wave2_e2e_check.py`, clean 3×). See `DELIVERABLES.md`
-for the submission checklist + requirement matrix.
+| `protocol.py` | Frozen wire contract — all message models + state machine |
+| `agent_base.py` | Agent factory, testnet guardrail, event-loop fix |
+| `stockpile_agents.py` | 3-agent negotiation Bureau (one-process demo) |
+| `front_agent.py` | Chat intent parser, narration, negotiation kickoff |
+| `settlement.py` | Payment Protocol handler — RequestPayment → CommitPayment → CompletePayment |
+| `interfaces.py` | Redis + Claude ranking seams (fail-closed mocks when deps unavailable) |
+| `run_front.py` | Live entrypoint — wires Payment Protocol + settlement hook onto front agent |
+| `run_hospital_b.py` / `run_hospital_c.py` | Surplus facility Mailbox runners |
+| `wave2_e2e_check.py` | Offline end-to-end harness (chat → negotiate → settle → pay) |

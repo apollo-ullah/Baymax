@@ -70,11 +70,17 @@ def pop_decision():
         return None
 
 
+NARRATION_LIST = "baymax:narration:log"   # persistent list — survives pubsub gaps
+
 def publish_narration(payload: dict) -> None:
-    """Publish one milestone. Swallows all errors — narration must never break
-    the negotiation (it is wired as a sink inside the core's _step)."""
+    """Publish one milestone. Writes to BOTH pubsub (real-time) and a Redis list
+    (reliable catch-up). Swallows all errors — narration must never break the core."""
     try:
-        _redis().publish(NARRATION_CHANNEL, json.dumps(payload))
+        r = _redis()
+        data = json.dumps(payload)
+        r.publish(NARRATION_CHANNEL, data)   # real-time path
+        r.rpush(NARRATION_LIST, data)        # persistent path
+        r.ltrim(NARRATION_LIST, -200, -1)    # keep last 200 events
     except Exception:
         pass
 
