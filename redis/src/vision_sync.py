@@ -24,6 +24,7 @@ ITEM_NAME_MAP = {
 HOSPITAL_MAP = {
     "hospital_a": "hospital_a",
     "hospital_b": "hospital_b",
+    "hospital_c": "hospital_c",
 }
 
 

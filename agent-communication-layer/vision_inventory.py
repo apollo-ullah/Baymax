@@ -92,8 +92,6 @@ def refresh_vision_inventory(hospital: str, item: str) -> InventoryState:
             _local_capture(hid, item)
         else:
             time.sleep(float(os.getenv("BAYMAX_VISION_WAIT_S", "2.5")))
-        if subs > 0:
-            time.sleep(float(os.getenv("BAYMAX_VISION_WAIT_S", "2.5")))
     except Exception:  # noqa: BLE001
         pass
     return get_inventory(hospital, item)

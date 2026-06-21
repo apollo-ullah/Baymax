@@ -40,7 +40,7 @@ if str(_REDIS_SRC) not in sys.path:
 from inventory import status_from_pct, write_inventory, write_surplus  # noqa: E402
 from vision_sync import write_latest_vision_result  # noqa: E402
 
-VALID_HOSPITALS = {"hospital_a", "hospital_b"}
+VALID_HOSPITALS = {"hospital_a", "hospital_b", "hospital_c"}
 
 # Pub/sub channel the dashboard publishes one-shot capture requests on.
 CAPTURE_CHANNEL = "vision:capture_request"
