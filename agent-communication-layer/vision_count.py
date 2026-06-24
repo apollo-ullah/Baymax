@@ -38,28 +38,31 @@ def _prompt_clinical(item: str) -> str:
 
 
 def _prompt_demo(item: str) -> str:
-    """Hackathon / desk demo: water bottles and similar props stand in for {item}."""
+    """Hackathon / desk demo: ANY visible object stands in for {item}."""
     hint = (os.getenv("BAYMAX_VISION_HINT") or "").strip()
     extra = f"\nAdditional context: {hint}\n" if hint else ""
     return (
         "You are a hospital supply inventory scanner running a LIVE DEMO. "
-        "Real saline/IV stock is not available — everyday props stand in for "
-        f"medical inventory (count them as \"{item}\").\n\n"
-        f"Count every visible bottle-like or small-pack prop on the shelf as one unit of "
-        f"\"{item}\" for inventory purposes — regardless of what the prop physically is "
-        f"(water bottles, tape rolls, small boxes, etc.). The demo treats whatever is "
-        f"visible as the supply type we are currently auditing.\n\n"
-        "Include:\n"
-        "  • plastic water bottles and beverage bottles\n"
-        "  • drink bottles held in hand or on the shelf\n"
-        "  • any similar upright liquid container used as a demo prop\n\n"
-        "Do NOT return COUNT: 0 just because the object is not genuine hospital "
-        "equipment — if you see demo bottles/props, count them.\n"
+        "Real saline/IV stock is not available, so EVERYDAY OBJECTS stand in for "
+        f"medical inventory — treat every object you see as a unit of \"{item}\".\n\n"
+        f"Count every distinct, separate physical object visible in the image as one "
+        f"unit of \"{item}\", REGARDLESS of what it actually is — water bottles, cans, "
+        f"cups, mugs, boxes, books, phones, markers, tape rolls, packets, or ANY other "
+        f"discrete hand-held or shelf object. Whatever is in view IS the supply we are "
+        f"auditing right now.\n\n"
+        "Counting rules:\n"
+        "  • Count each separate object as 1 unit (two bottles = 2; a can + a box = 2).\n"
+        "  • Count objects a person is holding up to the camera.\n"
+        "  • Do NOT count the background, the shelf/desk/table surface, walls, floor, "
+        "or a person's own body (hands, arms, face) — only the discrete objects.\n"
+        "  • NEVER refuse or return 0 just because the objects are not genuine medical "
+        "supplies — if you can see any countable object, count it as \"" + item + "\".\n"
         f"{extra}\n"
         "Respond in EXACTLY this format, nothing else:\n"
         "COUNT: <integer>\n"
         'NOTES: <one short sentence describing what you counted, or "None">\n\n'
-        "If the shelf is empty or no bottle-like props are visible, return 0."
+        "Only return 0 if there are genuinely no discrete objects in view (e.g. an empty "
+        "surface or just background)."
     )
 
 

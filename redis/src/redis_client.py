@@ -12,7 +12,7 @@ DEFAULT_REDIS_URL = "redis://localhost:6379"
 
 def get_redis() -> redis.Redis:
     """Return a Redis client built from REDIS_URL (with string decoding)."""
-    redis_url = os.getenv("REDIS_URL", DEFAULT_REDIS_URL)
+    redis_url = (os.getenv("REDIS_URL") or "").strip() or DEFAULT_REDIS_URL
     return redis.Redis.from_url(redis_url, decode_responses=True)
 
 

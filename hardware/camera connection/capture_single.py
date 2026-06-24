@@ -45,6 +45,13 @@ VALID_HOSPITALS = {"hospital_a", "hospital_b", "hospital_c"}
 # Pub/sub channel the dashboard publishes one-shot capture requests on.
 CAPTURE_CHANNEL = "vision:capture_request"
 
+DEFAULT_REDIS_URL = "redis://localhost:6379"
+
+
+def _redis_url() -> str:
+    """Treat blank REDIS_URL= in .env as unset (os.getenv default won't)."""
+    return (os.environ.get("REDIS_URL") or "").strip() or DEFAULT_REDIS_URL
+
 SINGLE_HOSPITAL_PROMPT = None  # deprecated — use vision_count.count_shelf()
 
 
@@ -94,7 +101,7 @@ def load_and_encode(path: str) -> tuple[bytes, object]:
 def write_image_to_redis(hospital_id: str, jpeg_bytes: bytes) -> None:
     """Store JPEG as base64 in Redis so Flask can serve it."""
     import redis as rlib
-    url = os.environ.get("REDIS_URL", "redis://localhost:6379")
+    url = _redis_url()
     r = rlib.Redis.from_url(url, decode_responses=True,
                             socket_connect_timeout=2, socket_timeout=2)
     r.set(f"vision:image:{hospital_id}", base64.b64encode(jpeg_bytes).decode())
@@ -159,7 +166,7 @@ def persist(r, hospital_id, item, capacity, threshold, jpeg_bytes, qty, notes):
 
 def _redis():
     import redis as rlib
-    url = os.environ.get("REDIS_URL", "redis://localhost:6379")
+    url = _redis_url()
     return rlib.Redis.from_url(url, decode_responses=True,
                                socket_connect_timeout=2, socket_timeout=2)
 
@@ -187,7 +194,7 @@ def run_watch(hospital_id, label, item, capacity, threshold):
     waiting. Designed for the remote-trigger demo (click on Laptop A → B captures).
     """
     import redis as rlib
-    url = os.environ.get("REDIS_URL", "redis://localhost:6379")
+    url = _redis_url()
     print(f"\n=== Hospital {label} WATCH mode — waiting for triggers on "
           f"'{CAPTURE_CHANNEL}' ({url}). Ctrl+C to stop ===")
     while True:
@@ -270,6 +277,7 @@ def run_loop(r, hospital_id, label, item, capacity, threshold, interval, vision_
 
 
 def main():
+    os.environ["REDIS_URL"] = _redis_url()
     hospital_id = os.environ.get("HOSPITAL_ID", "").lower().strip()
     if not hospital_id:
         sys.exit("ERROR: Set HOSPITAL_ID=hospital_a or hospital_b")

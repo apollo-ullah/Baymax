@@ -103,6 +103,10 @@ export function CameraCard({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ hospital_id: hospitalId, item, image_b64: dataUrl }),
       });
+      const ct = res.headers.get("content-type") ?? "";
+      if (!ct.includes("application/json")) {
+        throw new Error(`scan returned ${res.status} (expected JSON)`);
+      }
       setResult((await res.json()) as ScanResult);
     } catch (e) {
       setResult({ ok: false, error: e instanceof Error ? e.message : "scan failed" });

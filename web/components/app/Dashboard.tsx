@@ -8,7 +8,7 @@ import { PromptConsole } from "@/components/app/PromptConsole";
 import { PipelinePanel } from "@/components/app/PipelinePanel";
 import { ApprovalActions } from "@/components/app/ApprovalActions";
 import { ForecastPanel } from "@/components/app/ForecastPanel";
-import { CameraCard } from "@/components/app/CameraCard";
+import { CameraStations } from "@/components/app/CameraStations";
 
 type Decision = "approve" | "order" | "reject";
 
@@ -82,6 +82,10 @@ export function Dashboard() {
     <div className="space-y-5">
       <PromptConsole onRun={run} running={running} />
 
+      {/* Single-laptop, two-facility scan: freeze Hospital A, move inventory,
+          freeze Hospital B — both feed the same shared Redis the agents read. */}
+      <CameraStations item="Saline" />
+
       <div className="grid gap-5 lg:grid-cols-12">
         <div className="min-w-0 space-y-5 lg:col-span-7">
           <PipelinePanel events={events} running={running} />
@@ -110,8 +114,6 @@ export function Dashboard() {
           </div>
 
           <ForecastPanel />
-
-          <CameraCard />
         </div>
       </div>
     </div>

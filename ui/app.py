@@ -9,7 +9,8 @@ Endpoints:
     GET  /              dashboard HTML
     GET  /api/state     JSON snapshot of all pipeline data
     GET  /image/latest  latest capture JPEG (or placeholder)
-    POST /api/capture   run mock capture (--counts a=4,b=2) → Redis
+    POST /api/capture   capture from MacBook camera → Claude Vision → Redis
+    POST /api/scan      analyse a browser-uploaded JPEG frame → Redis
     POST /api/refresh_who   re-run WHO fetch + Claude reasoning → Redis
     POST /api/ingest        alias for /api/refresh_who
     POST /api/crisis        push a crisis onto baymax:crisis + seed crisis:active
@@ -61,6 +62,13 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 app = Flask(__name__)
 
+DEFAULT_REDIS_URL = "redis://localhost:6379"
+
+
+def _redis_url() -> str:
+    """Treat blank REDIS_URL= in .env as unset (os.getenv default won't)."""
+    return (os.getenv("REDIS_URL") or "").strip() or DEFAULT_REDIS_URL
+
 UI_PORT = int(os.getenv("UI_PORT", "5001"))
 REGION = os.getenv("FORECAST_REGION", "san_francisco")
 HARDWARE_DIR = Path(__file__).resolve().parents[1] / "hardware" / "camera connection"
@@ -109,19 +117,23 @@ def _ensure_bureau():
     if _bureau_proc and _bureau_proc.poll() is None:
         return
     _free_bureau_port()
+    # The negotiation engine is now the Claude multi-agent orchestrator
+    # (run_claude_demo.py — no uAgents/Bureau). It binds :8000 as a health port so
+    # _free_bureau_port() / start_demo.sh's wait_port keep working unchanged.
     env = {**os.environ,
            "BAYMAX_REDIS": "1",
-           "BAYMAX_OFFER_TIMEOUT": "4.0",
-           "BAYMAX_SPARSE_NARRATION": "0",
-           "BAYMAX_DASHBOARD_PORT": "8079",  # avoid conflict with Flask
-           "REDIS_URL": os.getenv("REDIS_URL", "redis://localhost:6379")}
+           "BAYMAX_CLAUDE_RESEARCH": "1",
+           "BAYMAX_CLAUDE_RANKING": "1",
+           "BAYMAX_HOSPITAL_LLM": "1",
+           "BAYMAX_HEALTH_PORT": str(BUREAU_PORT),
+           "REDIS_URL": _redis_url()}
     log_fh = open(BUREAU_LOG, "w")
     _bureau_proc = subprocess.Popen(
-        [str(AGENT_VENV_PYTHON), "run_dashboard_demo.py"],
+        [str(AGENT_VENV_PYTHON), "run_claude_demo.py"],
         cwd=str(AGENT_DIR), env=env,
         stdout=log_fh, stderr=log_fh,
     )
-    log.info("Bureau started (pid %s) — log: %s", _bureau_proc.pid, BUREAU_LOG)
+    log.info("Claude engine started (pid %s) — log: %s", _bureau_proc.pid, BUREAU_LOG)
 
 
 # ── In-memory narration state ─────────────────────────────────────────────────
@@ -154,7 +166,7 @@ def _narration_subscriber():
     while True:
         try:
             import redis as _redis_lib
-            url = os.getenv("REDIS_URL", "redis://localhost:6379")
+            url = _redis_url()
             r = _redis_lib.Redis.from_url(url, decode_responses=True,
                                           socket_connect_timeout=2, socket_timeout=2)
             pubsub = r.pubsub()
@@ -195,7 +207,7 @@ _subscriber_thread.start()
 
 def _redis():
     import redis as _redis_lib
-    url = os.getenv("REDIS_URL", "redis://localhost:6379")
+    url = _redis_url()
     return _redis_lib.Redis.from_url(url, decode_responses=True,
                                      socket_connect_timeout=1, socket_timeout=1)
 
@@ -421,7 +433,7 @@ def api_capture():
     }))
 
     env = {**os.environ, "HOSPITAL_ID": hospital_id, "ITEM": item,
-           "REDIS_URL": os.getenv("REDIS_URL", "redis://localhost:6379"),
+           "REDIS_URL": _redis_url(),
            "BAYMAX_VISION_DEMO": os.getenv("BAYMAX_VISION_DEMO", "1")}
 
     cmd = [sys.executable, str(CAPTURE_SINGLE_SCRIPT)]
@@ -477,7 +489,7 @@ def api_scan():
         with os.fdopen(fd, "wb") as f:
             f.write(raw)
         env = {**os.environ, "HOSPITAL_ID": hospital_id, "ITEM": item,
-               "REDIS_URL": os.getenv("REDIS_URL", "redis://localhost:6379"),
+               "REDIS_URL": _redis_url(),
                "BAYMAX_VISION_DEMO": os.getenv("BAYMAX_VISION_DEMO", "1")}
         cmd = [sys.executable, str(CAPTURE_SINGLE_SCRIPT), "--image", tmp]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=60,
